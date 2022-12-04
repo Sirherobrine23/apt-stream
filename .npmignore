@@ -1,0 +1,11 @@
+# vscode
+.devcontainer/
+.vscode/
+
+# node modules
+node_modules/
+/*.tgz
+
+# Github and Git
+.github/
+.git*
