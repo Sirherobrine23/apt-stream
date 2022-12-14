@@ -1,6 +1,6 @@
 import * as yaml from "yaml";
 import fs from "node:fs/promises";
-import {extendFs} from "@sirherobrine23/coreutils";
+import coreUtils, { DockerRegistry } from "@sirherobrine23/coreutils";
 
 export type configV1 = {
   version: 1,
@@ -10,6 +10,7 @@ export type configV1 = {
       repo: string
     },
     from?: "oci"|"release"|"oci+release",
+    ociConfig?: DockerRegistry.Manifest.optionsManifests,
     auth?: {
       username?: string,
       password?: string
@@ -18,14 +19,15 @@ export type configV1 = {
 };
 
 export async function getConfig(filePath: string): Promise<configV1> {
-  if (!await extendFs.exists(filePath)) throw new Error("file not exists");
+  if (!await coreUtils.extendFs.exists(filePath)) throw new Error("file not exists");
   const configData: configV1 = yaml.parse(await fs.readFile(filePath, "utf8"));
   return {
     version: 1,
-    repos: configData?.repos?.map(({repo, auth, from}) => ({
+    repos: configData?.repos?.map(({repo, auth, from, ociConfig}) => ({
       repo,
       from: from||"oci",
-      auth
+      ociConfig,
+      auth,
     }))||[]
   };
 }

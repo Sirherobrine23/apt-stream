@@ -1,10 +1,16 @@
 version: 1
 repos:
-  - repo: Sirherobrine23/ghcrAptRepository
-    from: release
+  - repo: debian
+    from: oci
+    ociConfig:
+      platform: linux
+      arch: x64
 
-  - repo: The-Bds-Maneger/BedrockFetch
-    from: release
+  # - repo: Sirherobrine23/ghcrAptRepository
+  #   from: release
 
-  - repo: cli/cli
-    from: release
+  # - repo: The-Bds-Maneger/BedrockFetch
+  #   from: release
+
+  # - repo: cli/cli
+  #   from: release

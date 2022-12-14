@@ -1,8 +1,17 @@
-import express from "express";
 import { format } from "node:util";
+import express from "express";
 import * as utils from "./utils.js";
+import mainConfig from "../main.js";
 
-export function createAPI(rootRepo?: string) {
+export async function createAPI(configPath: string, portListen: number, callback = () => console.log("Listen on %f", portListen)) {
+  let dataRepo = await mainConfig(configPath);
+  (async () => {
+    while (true) {
+      console.log("Updating %s", configPath);
+      dataRepo = await mainConfig(configPath);
+      await new Promise(done => setTimeout(done, 20000));
+    }
+  })();
   const app = express();
   app.use(express.json());
   app.use(express.urlencoded({extended: true}));
@@ -12,9 +21,7 @@ export function createAPI(rootRepo?: string) {
   });
 
   // Packages avaibles
-  app.get("/", (_req, res) => res.json({
-    packages: []
-  }));
+  app.get("/", (_req, res) => res.json(dataRepo));
 
   // source.list
   app.get("/sources.list", (req, res) => {
@@ -23,7 +30,7 @@ export function createAPI(rootRepo?: string) {
   });
 
   // Pool
-  app.get("/pool/:repo/:package_name", (req, res) => {});
+  app.get("/pool/:repo/:package_name/:version.deb", (req, res) => {});
 
   // dist
   app.get("/dist/:suite/Release", (req, res) => {
@@ -53,6 +60,8 @@ export function createAPI(rootRepo?: string) {
     });
     await utils.createPackagegz(res, []);
   });
+  app.listen(3000, callback);
   return app;
 }
-createAPI().listen(3000, () => console.log("Listen on 3000"));
+
+createAPI(process.cwd()+"/repoconfig.yml", 3000).catch(console.error);
