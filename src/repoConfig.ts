@@ -9,7 +9,7 @@ export type configV1 = {
       owner: string,
       repo: string
     },
-    from?: "oci"|"release"|"oci+release"|"auto",
+    from?: "oci"|"release"|"oci+release",
     auth?: {
       username?: string,
       password?: string
@@ -24,7 +24,7 @@ export async function getConfig(filePath: string): Promise<configV1> {
     version: 1,
     repos: configData?.repos?.map(({repo, auth, from}) => ({
       repo,
-      from: from||"auto",
+      from: from||"oci",
       auth
     }))||[]
   };

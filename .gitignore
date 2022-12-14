@@ -1,5 +1,4 @@
-# Ignore node addon
-*.node
+.repoTest/
 
 # Ingore node folders
 node_modules/
