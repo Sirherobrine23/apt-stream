@@ -1,5 +1,5 @@
 import { getConfig, packageRegister } from "./repoConfig.js";
-import { format } from "util";
+import { format } from "node:util";
 import coreUtils from "@sirherobrine23/coreutils";
 import * as ghcr from "../githubGhcr.js";
 import * as release from "../githubRelease.js";
