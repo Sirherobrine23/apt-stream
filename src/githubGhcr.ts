@@ -6,20 +6,24 @@ import path from "node:path";
 import tar from "tar";
 import os from "node:os";
 
+
 export async function list(repo: string|manifestOptions, config?: DockerRegistry.Manifest.optionsManifests) {
   console.log("testing %o", repo);
   const dockerRegistry = await coreUtils.DockerRegistry.Manifest.Manifest(repo, config);
   const layers = await dockerRegistry.imageManifest(dockerRegistry.repoConfig.tagDigest);
   for (const layer of layers.layers) {
     console.log("Docker image %o testing %s", dockerRegistry.repoConfig, layer.digest);
-    const files: {path: string, size: number}[] = [];
-    const pipe = (await coreUtils.httpRequest.pipeFetch({url: dockerRegistry.endpointsControl.blob.get_delete(layer.digest), headers: {Authorization: `Bearer ${await DockerRegistry.Utils.getToken(dockerRegistry.repoConfig)}`}})).pipe(tar.t({
-      onentry: (entry) => {
+    const files: {path: string, size: number, config?: string}[] = [];
+    const piped = (await coreUtils.httpRequest.pipeFetch({url: dockerRegistry.endpointsControl.blob.get_delete(layer.digest), headers: {Authorization: `Bearer ${await DockerRegistry.Utils.getToken(dockerRegistry.repoConfig)}`}})).pipe(tar.t({
+      async onentry(entry) {
         if (!entry.path.endsWith(".deb")) return;
-        files.push({path: entry.path, size: entry.bufferLength});
+        files.push({
+          path: entry.path,
+          size: entry.bufferLength
+        });
       }
     }));
-    await new Promise<void>(done => pipe.on("end", done));
+    await new Promise<void>(done => piped.on("end", done));
     if (files.length === 0) continue;
     return {
       files,
@@ -27,7 +31,10 @@ export async function list(repo: string|manifestOptions, config?: DockerRegistry
         if (!files.some(({path}) => file === path)) throw new Error("Invalid file");
         const piped = (await coreUtils.httpRequest.pipeFetch({url: dockerRegistry.endpointsControl.blob.get_delete(layer.digest), headers: {Authorization: `Bearer ${await DockerRegistry.Utils.getToken(dockerRegistry.repoConfig)}`}})).pipe(tar.x({
           onentry: async (entry) => {
-            if (!res.writable) return;
+            if (!res.writable) {
+              piped.end();
+              return;
+            }
             if (file !== entry.path) return;
             entry.pipe(res);
             await new Promise(done => res.once("unpipe", done));

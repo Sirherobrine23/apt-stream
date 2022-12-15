@@ -1,17 +1,10 @@
 import { format } from "node:util";
 import express from "express";
 import * as utils from "./utils.js";
-import mainConfig from "../main.js";
+import mainConfig from "./main.js";
 
 export async function createAPI(configPath: string, portListen: number, callback = () => console.log("Listen on %f", portListen)) {
-  let dataRepo = await mainConfig(configPath);
-  (async () => {
-    while (true) {
-      console.log("Updating %s", configPath);
-      dataRepo = await mainConfig(configPath);
-      await new Promise(done => setTimeout(done, 20000));
-    }
-  })();
+  const mainRegister = await mainConfig(configPath);
   const app = express();
   app.use(express.json());
   app.use(express.urlencoded({extended: true}));
@@ -21,7 +14,7 @@ export async function createAPI(configPath: string, portListen: number, callback
   });
 
   // Packages avaibles
-  app.get("/", (_req, res) => res.json(dataRepo));
+  app.get("/", (_req, res) => res.json(mainRegister.getPackages()));
 
   // source.list
   app.get("/sources.list", (req, res) => {
