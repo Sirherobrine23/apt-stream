@@ -3,4 +3,5 @@
 # Ingore node folders
 node_modules/
 *.tgz
+*.deb
 dist/

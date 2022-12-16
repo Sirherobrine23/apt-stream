@@ -45,7 +45,7 @@ export type packagesObject = {
 };
 
 export type ReleaseOptions = {
-  Origin: string,
+  Origin?: string,
   Suite?: string,
   Archive?: string,
   lebel?: string,
@@ -57,7 +57,9 @@ export type ReleaseOptions = {
 };
 
 export function mountRelease(repo: ReleaseOptions) {
-  let data = [`Origin: ${repo.Origin}\nLebel: ${repo.lebel||repo.Origin}`];
+  let data = [`Lebel: ${repo.lebel||repo.Origin}`];
+  data.push(`Date: ${(new Date()).toUTCString()}`);
+  if (repo.Origin) data.push(`Origin: ${repo.Origin}`);
   if (repo.Suite) data.push(`Suite: ${repo.Suite}`);
   else if (repo.Archive) data.push(`Archive: ${repo.Archive}`);
   if (repo.Codename) data.push(`Codename: ${repo.Codename}`);
@@ -165,7 +167,6 @@ export class localRegistryManeger {
       const ReadStream = new PassThrough({read(){}, write(){}});
       const gzip = ReadStream.pipe(zlib.createGzip());
       gzip.pipe(res);
-      gzip.on("data", (chunk) => vsize += chunk.length);
       gzip.pipe(rawStream);
       res = ReadStream;
     }
@@ -237,12 +238,12 @@ export async function createAPI(apiConfig: apiConfig) {
     const Archs: string[] = [];
     Object.keys(mainRegister.packageRegister[req.params.package]).forEach(version => Object.keys(mainRegister.packageRegister[req.params.package][version]).forEach(arch => (!Archs.includes(arch.toLowerCase()))?Archs.push(arch.toLowerCase()):null));
     const shas: ReleaseOptions["sha256"] = [];
-    for (const arch of Archs) {
-      const Packagegz = await mainRegister.createPackage(true, req.params.package, arch);
-      const Package = await mainRegister.createPackage(false, req.params.package, arch);
-      if (Packagegz?.sha256?.hash) shas.push({file: format("main/binary-%s/Packages.gz", arch), sha256: Packagegz.sha256.hash, size: Packagegz.sha256.size});
-      if (Package?.sha256?.hash) shas.push({file: format("main/binary-%s/Packages", arch), sha256: Package.sha256.hash, size: Package.sha256.size});
-    }
+    // for (const arch of Archs) {
+    //   const Packagegz = await mainRegister.createPackage(true, req.params.package, arch);
+    //   const Package = await mainRegister.createPackage(false, req.params.package, arch);
+    //   if (Packagegz?.sha256?.hash) shas.push({file: format("main/binary-%s/Packages.gz", arch), sha256: Packagegz.sha256.hash, size: Packagegz.sha256.size});
+    //   if (Package?.sha256?.hash) shas.push({file: format("main/binary-%s/Packages", arch), sha256: Package.sha256.hash, size: Package.sha256.size});
+    // }
     const data = mountRelease({
       Origin: apiConfig.repositoryOptions?.Origin||"node-apt",
       lebel: apiConfig.repositoryOptions?.lebel,
@@ -292,22 +293,36 @@ export async function createAPI(apiConfig: apiConfig) {
   });
   app.get("/pool/:package_name/:version", (req, res) => {
     const {package_name, version} = req.params;
-    const info = mainRegister.packageRegister[package_name]?.[version];
+    const info = mainRegister.packageRegister[package_name];
     if (!info) return res.status(404).json({error: "Package not registred"});
-    return res.json(info);
+    const ver = info?.[version];
+    if (!ver) return res.status(404).json({error: "version not registred"});
+    return res.json(ver);
   });
-  app.get("/pool/:package_name/:version/:arch", (req, res) => {
-    const {package_name, arch, version} = req.params;
-    const info = mainRegister.packageRegister[package_name]?.[version]?.[arch];
-    if (!info) return res.status(404).json({error: "Package not registred"});
-    return res.json(info.config||info);
-  });
+
   app.get("/pool/:package_name/:version/:arch.deb", (req, res) => {
     const {package_name, arch, version} = req.params;
-    const stream = mainRegister.packageRegister[package_name]?.[version]?.[arch]?.getStream;
+    const info = mainRegister.packageRegister[package_name];
+    if (!info) return res.status(404).json({error: "Package not registred"});
+    const ver = info?.[version];
+    if (!ver) return res.status(404).json({error: "version not registred"});
+    const archInfo = ver?.[arch];
+    if (!archInfo) return res.status(404).json({error: "arch not registred"});
+    const stream = archInfo?.getStream;
     if (!stream) return res.status(404).json({error: "Package not registred"});
     res.writeHead(200, {"Content-Type": "application/x-debian-package"});
     return Promise.resolve(stream()).then(stream => stream.pipe(res));
+  });
+
+  app.get("/pool/:package_name/:version/:arch", (req, res) => {
+    const {package_name, arch, version} = req.params;
+    const info = mainRegister.packageRegister[package_name];
+    if (!info) return res.status(404).json({error: "Package not registred"});
+    const ver = info?.[version];
+    if (!ver) return res.status(404).json({error: "version not registred"});
+    const archInfo = ver?.[arch];
+    if (!archInfo) return res.status(404).json({error: "arch not registred"});
+    return res.json(archInfo);
   });
 
   app.listen(apiConfig.portListen||0, function listen() {
@@ -316,8 +331,3 @@ export async function createAPI(apiConfig: apiConfig) {
   });
   return app;
 }
-
-createAPI({
-  configPath: process.cwd()+"/repoconfig.yml",
-  portListen: 3000,
-}).catch(console.error);
