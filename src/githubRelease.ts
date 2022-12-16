@@ -1,4 +1,4 @@
-import { parseDebControl } from "./aptRepo/repoConfig.js";
+import { parseDebControl } from "./aptRepo/index.js";
 import { createExtract } from "./ar.js";
 import coreUtils from "@sirherobrine23/coreutils";
 import tar from "tar";
@@ -34,23 +34,21 @@ export async function fullConfig(config: {config: string|baseOptions<{releaseTag
   for (const {assets} of releases ?? []) for (const {download} of assets ?? []) {
     await new Promise<void>(async done => {
       let size = 0;
-      const request = await coreUtils.httpRequest.pipeFetch(download);
-      request.on("data", (chunk) => size += chunk.length);
-      const ar = request.pipe(createExtract());
+      const request = (await coreUtils.httpRequest.pipeFetch(download)).on("data", (chunk) => size += chunk.length);
       const signs = Promise.all([coreUtils.extendsCrypto.createSHA256_MD5(request, "sha256", new Promise(done => request.once("end", done))), coreUtils.extendsCrypto.createSHA256_MD5(request, "md5", new Promise(done => request.once("end", done)))]).then(([sha256, md5]) => ({sha256, md5}));
-      ar.on("entry", (info, stream) => {
-        if (info.name !== "control.tar.gz") return;
-        stream.pipe(tar.list({
+      request.pipe(createExtract()).on("entry", (info, stream) => {
+        if (!info.name.endsWith("control.tar.gz")) return null;
+        return stream.pipe(tar.list({
           onentry: (tarEntry) => {
-            if (tarEntry.path !== "./control") return;
+            if (!tarEntry.path.endsWith("control")) return;
             let controlBuffer: Buffer;
             tarEntry.on("data", (chunk) => {
               if (!controlBuffer) controlBuffer = chunk;
               else controlBuffer = Buffer.concat([controlBuffer, chunk]);
-            });
-            tarEntry.on("finish", async () => {
+            }).on("error", console.log);
+            request.on("end", async () => {
               done();
-              const config = parseDebControl(controlBuffer.toString());
+              const config = parseDebControl(controlBuffer);
               if (!(config.Package && config.Version && config.Architecture)) return;
               const sigs = await signs;
               packageManeger.registerPackage({
@@ -62,7 +60,7 @@ export async function fullConfig(config: {config: string|baseOptions<{releaseTag
                 size,
                 getStrem: async () => coreUtils.httpRequest.pipeFetch(download),
               });
-            });
+            }).on("error", console.log);
           }
         }, ["./control"]));
       }).on("error", console.log);

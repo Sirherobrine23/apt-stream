@@ -2,20 +2,6 @@ import coreUtils, { DockerRegistry } from "@sirherobrine23/coreutils";
 import * as yaml from "yaml";
 import fs from "node:fs/promises";
 
-export function parseDebControl(control: string|Buffer) {
-  if (Buffer.isBuffer(control)) control = control.toString();
-  const controlObject: {[key: string]: string} = {};
-  for (const line of control.split(/\r?\n/)) {
-    if (/^[\w\S]+:/.test(line)) {
-      const [, key, value] = line.match(/^([\w\S]+):(.*)$/);
-      controlObject[key.trim()] = value.trim();
-    } else {
-      controlObject[Object.keys(controlObject).at(-1)] += line;
-    }
-  }
-  return controlObject;
-}
-
 export type configV1 = {
   version: 1,
   repos: {

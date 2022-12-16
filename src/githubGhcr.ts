@@ -1,78 +1,54 @@
 import type { manifestOptions } from "@sirherobrine23/coreutils/src/DockerRegistry/manifests.js";
 import { createExtract } from "./ar.js";
-import { WriteStream } from "node:fs";
-import { Writable } from "node:stream";
-// import { registerFunction } from "./aptRepo/repoConfig.js";
+import { Readable } from "node:stream";
 import coreUtils, { DockerRegistry } from "@sirherobrine23/coreutils";
-import path from "node:path";
 import tar from "tar";
-import os from "node:os";
+import { localRegistryManeger, parseDebControl } from "./aptRepo/index.js";
 
 export async function list(repo: string|manifestOptions, config?: DockerRegistry.Manifest.optionsManifests) {
   console.log("testing %o", repo);
   const dockerRegistry = await coreUtils.DockerRegistry.Manifest.Manifest(repo, config);
   const layers = await dockerRegistry.imageManifest(dockerRegistry.repoConfig.tagDigest);
   for (const layer of layers.layers) {
-    console.log("Docker image %o testing %s", dockerRegistry.repoConfig, layer.digest);
-    const files: {path: string, size: number, config?: string}[] = [];
-    const piped = (await coreUtils.httpRequest.pipeFetch({url: dockerRegistry.endpointsControl.blob.get_delete(layer.digest), headers: {Authorization: `Bearer ${await DockerRegistry.Utils.getToken(dockerRegistry.repoConfig)}`}})).pipe(tar.t({
-      async onentry(entry) {
-        if (!entry.path.endsWith(".deb")) return;
-        const ar = entry.pipe(createExtract());
-        await new Promise<void>(done => {
-          ar.once("entry", (info, stream) => {
-            if (info.name !== "control.tar.gz") return;
-            stream.pipe(tar.extract({
-              onentry: (tarEntry) => {
-                if (tarEntry.path !== "control") return;
-                let controlBuffer: Buffer;
-                tarEntry.on("data", (chunk) => {
-                  if (!controlBuffer) controlBuffer = chunk;
-                  else controlBuffer = Buffer.concat([controlBuffer, chunk]);
-                });
-                tarEntry.on("end", () => {
-                  files.push({
-                    path: entry.path,
-                    size: entry.bufferLength,
-                    config: controlBuffer.toString()
-                  });
-                  done();
-                });
-              }
-            }));
-          });
-        });
-      }
-    }));
-    await new Promise<void>(done => piped.on("end", done));
-    if (files.length === 0) continue;
-    return {
-      files,
-      stream: async (file: string, res: WriteStream|Writable) => {
-        if (!files.some(({path}) => file === path)) throw new Error("Invalid file");
-        const piped = (await coreUtils.httpRequest.pipeFetch({url: dockerRegistry.endpointsControl.blob.get_delete(layer.digest), headers: {Authorization: `Bearer ${await DockerRegistry.Utils.getToken(dockerRegistry.repoConfig)}`}})).pipe(tar.x({
-          onentry: async (entry) => {
-            if (!res.writable) {
-              piped.end();
-              return;
-            }
-            if (file !== entry.path) return;
-            entry.pipe(res);
-            await new Promise(done => res.once("unpipe", done));
-            piped.end();
-            return;
-          }
-        }));
-        return new Promise<void>(done => piped.once("finish", done));
-      }
-    };
+    console.log("Docker image %s/%s/%s testing %s", dockerRegistry.repoConfig.registryBase, dockerRegistry.repoConfig.owner, dockerRegistry.repoConfig.repository, layer.digest);
   }
-  return {};
 }
 
-export async function localRepo(repo: string) {
-  const tmpStorage = path.join(process.env.TMPSTORAGE ? path.resolve(process.env.TMPSTORAGE) : os.tmpdir(), ".ghcrDownloads");
-  const dockerRegistry = await coreUtils.DockerRegistry.Manifest.Manifest(repo);
-  // const data = await dockerRegistry.imageManifest();
-  return (await coreUtils.DockerRegistry.Download.downloadBlob(dockerRegistry.repoConfig, {storage: tmpStorage}));
+export async function fullConfig(listReturn: Awaited<ReturnType<typeof list>>, packageManeger: localRegistryManeger) {
+  if (listReturn.files?.length !> 0) return;
+  for (const file of listReturn.files ?? []) {
+    await new Promise<void>(async done => {
+      let size = 0;
+      const request = (await listReturn.stream(file.path)).on("data", (chunk) => size += chunk.length);
+      const signs = Promise.all([coreUtils.extendsCrypto.createSHA256_MD5(request, "sha256", new Promise(done => request.once("end", done))), coreUtils.extendsCrypto.createSHA256_MD5(request, "md5", new Promise(done => request.once("end", done)))]).then(([sha256, md5]) => ({sha256, md5}));
+      request.pipe(createExtract()).on("entry", (info, stream) => {
+        if (!info.name.endsWith("control.tar.gz")) return null;
+        return stream.pipe(tar.list({
+          onentry: (tarEntry) => {
+            if (!tarEntry.path.endsWith("control")) return;
+            let controlBuffer: Buffer;
+            tarEntry.on("data", (chunk) => {
+              if (!controlBuffer) controlBuffer = chunk;
+              else controlBuffer = Buffer.concat([controlBuffer, chunk]);
+            }).on("error", console.log);
+            request.on("end", async () => {
+              done();
+              const config = parseDebControl(controlBuffer);
+              if (!(config.Package && config.Version && config.Architecture)) return;
+              const sigs = await signs;
+              packageManeger.registerPackage({
+                name: config.Package,
+                version: config.Version,
+                arch: config.Architecture,
+                packageConfig: config,
+                signature: sigs,
+                size,
+                getStrem: async () => listReturn.stream(file.path)
+              });
+            });
+          }
+        }, ["./control"]));
+      }).on("error", console.log);
+    });
+  }
 }

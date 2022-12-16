@@ -1,30 +1,12 @@
 import { format } from "node:util";
 import { WriteStream } from "node:fs";
 import { PassThrough, Readable, Writable } from "node:stream";
-import { getConfig } from "./repoConfig.js";
+import { getConfig } from "../repoConfig.js";
 import * as ghcr from "../githubGhcr.js";
 import * as release from "../githubRelease.js";
 import zlib from "node:zlib";
 import express from "express";
 import coreUtils from "@sirherobrine23/coreutils";
-
-/*
-Package: 1oom
-Version: 1.0-2
-Installed-Size: 1873
-Maintainer: Debian Games Team <pkg-games-devel@lists.alioth.debian.org>
-Architecture: amd64
-Depends: libc6 (>= 2.14), libsamplerate0 (>= 0.1.7), libsdl2-2.0-0 (>= 2.0.12), libsdl2-mixer-2.0-0 (>= 2.0.2)
-Description: Master of Orion engine
-Homepage: https://kilgoretroutmaskreplicant.gitlab.io/plain-html/
-Description-md5: 5f91cd9d6749d593ed0c26e4ada69fa4
-Section: contrib/games
-Priority: optional
-Filename: pool/contrib/1/1oom/1oom_1.0-2_amd64.deb
-Size: 506180
-MD5sum: d6ddb9189f14e76d7336246104cd0d2c
-SHA256: b560619040f13626efcb02903d14a5b204b01f1cac78c6a76d6cb590dd60ffe8
-*/
 
 export type packagesObject = {
   Package: string
@@ -55,6 +37,20 @@ export type ReleaseOptions = {
   Description?: string,
   sha256?: {sha256: string, size: number, file: string}[]
 };
+
+export function parseDebControl(control: string|Buffer) {
+  if (Buffer.isBuffer(control)) control = control.toString();
+  const controlObject: {[key: string]: string} = {};
+  for (const line of control.split(/\r?\n/)) {
+    if (/^[\w\S]+:/.test(line)) {
+      const [, key, value] = line.match(/^([\w\S]+):(.*)$/);
+      controlObject[key.trim()] = value.trim();
+    } else {
+      controlObject[Object.keys(controlObject).at(-1)] += line;
+    }
+  }
+  return controlObject;
+}
 
 export function mountRelease(repo: ReleaseOptions) {
   let data = [`Lebel: ${repo.lebel||repo.Origin}`];
@@ -196,8 +192,10 @@ async function mainConfig(configPath: string) {
   const config = await getConfig(configPath);
   const packageReg = new localRegistryManeger();
   Promise.all(config.repos.map(async repo => {
-    if (repo.from === "oci") return ghcr.list(typeof repo.repo === "string" ? repo.repo : coreUtils.DockerRegistry.Utils.toManifestOptions(format("%s/%s", repo.repo.owner, repo.repo.repo)), repo.ociConfig).catch(console.error);
-    else if (repo.from === "release") return release.fullConfig({config: repo.repo, githubToken: repo?.auth?.password}, packageReg).catch(console.error);
+    if (repo.from === "release") return release.fullConfig({config: repo.repo, githubToken: repo?.auth?.password}, packageReg).catch(console.error);
+    if (repo.from === "oci") return ghcr.list(typeof repo.repo === "string" ? repo.repo : coreUtils.DockerRegistry.Utils.toManifestOptions(format("%s/%s", repo.repo.owner, repo.repo.repo)), repo.ociConfig).then(data => {
+      return ghcr.fullConfig(data, packageReg).catch(console.error);
+    }).catch(console.error);
   })).catch(console.error);
   return packageReg;
 }

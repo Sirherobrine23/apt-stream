@@ -1,16 +1,16 @@
 version: 1
 repos:
-  # - repo: debian
-  #   from: oci
-  #   ociConfig:
-  #     platform: linux
-  #     arch: x64
+  - repo: ghcr.io/sirherobrine23/nodeaptexample
+    from: oci
+    ociConfig:
+      platform: linux
+      arch: x64
 
-  - repo: Sirherobrine23/ghcrAptRepository
-    from: release
+  # - repo: Sirherobrine23/ghcrAptRepository
+  #   from: release
 
-  - repo: The-Bds-Maneger/BedrockFetch
-    from: release
+  # - repo: The-Bds-Maneger/BedrockFetch
+  #   from: release
 
-  - repo: cli/cli
-    from: release
+  # - repo: cli/cli
+  #   from: release
