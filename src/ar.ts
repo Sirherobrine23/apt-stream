@@ -17,24 +17,13 @@ export interface gnuExtract extends Writable {
   once(event: "entry", listener: (info: fileInfo, stream: Readable) => void): this;
 }
 
+export function createExtract() {
+  return new gnuExtract();
+}
 export class gnuExtract extends Writable {
   #__locked = false;
   #entryStream?: Readable;
   #size = 0;
-  async #__push(chunk: Buffer, callback?: (error?: Error | null) => void) {
-    if (this.#check_new_file(chunk.subarray(this.#size))) {
-      const silpChuck = chunk.subarray(0, this.#size);
-      chunk = chunk.subarray(this.#size);
-      this.#entryStream.push(silpChuck, "binary");
-      this.#entryStream.push(null);
-      this.#entryStream = undefined;
-      this.#size = 0;
-      return this._write(chunk, "binary", callback);
-    }
-    this.#size -= chunk.length;
-    this.#entryStream.push(chunk, "binary");
-    return callback();
-  }
   #check_new_file(chunk: Buffer) {
     return !!(chunk.subarray(0, 60).toString().replace(/\s+\`(\n)?$/, "").trim().match(/^([\w\s\S]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$/));
   }
@@ -52,13 +41,41 @@ export class gnuExtract extends Writable {
     }
     return callback(error);
   }
-  async _write(chunk: Buffer, encoding, callback?: (error?: Error | null) => void) {
-    if (!Buffer.isBuffer(chunk)) chunk = Buffer.from(chunk, encoding);
-    if (!this.#__locked) {
+  async #__push(chunk: Buffer, callback?: (error?: Error | null) => void) {
+    if (0 < this.#size) {
+      if (this.#check_new_file(chunk.subarray(this.#size))) {
+        // console.log("[Ar]: Nextfile");
+        const silpChuck = chunk.subarray(0, this.#size);
+        chunk = chunk.subarray(this.#size);
+        // console.log("[Ar]: Nextfile: %f", chunk.length);
+        this.#entryStream.push(silpChuck, "binary");
+        this.#entryStream.push(null);
+        this.#entryStream = undefined;
+        this.#size = 0;
+        return this._write(chunk, "binary", callback);
+      }
+    }
+    this.#size -= chunk.length;
+    this.#entryStream.push(chunk, "binary");
+    return callback();
+  }
+  #waitMore?: Buffer;
+  async _write(chunkRemote: Buffer, encoding, callback?: (error?: Error | null) => void) {
+    if (!Buffer.isBuffer(chunkRemote)) chunkRemote = Buffer.from(chunkRemote, encoding);
+    let chunk = Buffer.from(chunkRemote);
+    if (this.#__locked === false) {
+      // console.log("[Ar]: Fist chunk length: %f", chunk.length);
+      if (this.#waitMore) {
+        chunk = Buffer.concat([this.#waitMore, chunk]);
+        this.#waitMore = undefined;
+      }
+      if (chunk.length < 70) {
+        this.#waitMore = chunk;
+        callback();
+      }
       if (!chunk.subarray(0, 8).toString().trim().startsWith("!<arch>")) {
-        this.emit("error", new Error("Not an ar file"));
         this.destroy();
-        return;
+        return callback(new Error("Not an ar file"));
       }
       this.#__locked = true;
       chunk = chunk.subarray(8);

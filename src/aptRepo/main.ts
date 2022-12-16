@@ -9,15 +9,12 @@ export default async function main(configPath: string) {
   const packageReg = new packageRegister();
   Promise.all(config.repos.map(async repo => {
     if (repo.from === "release") {
-      await release.list(repo.repo, repo?.auth?.password);
-      return;
+      return release.fullConfig({config: repo.repo, githubToken: repo?.auth?.password}, packageReg);
     } else if (repo.from === "oci") {
-      await ghcr.list(typeof repo.repo === "string" ? repo.repo : coreUtils.DockerRegistry.Utils.toManifestOptions(format("%s/%s", repo.repo.owner, repo.repo.repo)), repo.ociConfig);
-      return;
+      return ghcr.list(typeof repo.repo === "string" ? repo.repo : coreUtils.DockerRegistry.Utils.toManifestOptions(format("%s/%s", repo.repo.owner, repo.repo.repo)), repo.ociConfig);
     }
-    const releaseData = await release.list(repo.repo, repo?.auth?.password), oci = await ghcr.list(typeof repo.repo === "string" ? repo.repo : coreUtils.DockerRegistry.Utils.toManifestOptions(format("%s/%s", repo.repo.owner, repo.repo.repo)), repo.ociConfig);
-    console.log(releaseData, oci);
-    return;
+    release.fullConfig({config: repo.repo, githubToken: repo?.auth?.password}, packageReg);
+    return ghcr.list(typeof repo.repo === "string" ? repo.repo : coreUtils.DockerRegistry.Utils.toManifestOptions(format("%s/%s", repo.repo.owner, repo.repo.repo)), repo.ociConfig);
   })).catch(console.error);
   return packageReg;
 }

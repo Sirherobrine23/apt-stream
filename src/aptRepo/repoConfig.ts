@@ -7,35 +7,58 @@ export type packagesObject = {
   name: string,
   getStrem: () => Promise<Readable>,
   version: string,
-  packageConfig?: any
+  arch: string,
+  signature?: {
+    sha256: string,
+    md5: string,
+  },
+  packageConfig?: {
+    [key: string]: string;
+  }
+};
+
+type localRegister = {
+  [name: string]: {
+    [version: string]: {
+      [arch: string]: {
+        getStream: packagesObject["getStrem"],
+        config?: packagesObject["packageConfig"],
+        signature?: packagesObject["signature"],
+      }
+    }
+  }
 };
 
 export class packageRegister {
-  #packageRegister: {[name: string]: {[version: string]: {getStream: packagesObject["getStrem"], config?: packagesObject["packageConfig"]}}} = {};
-  public getPackages() {
-    return Object.keys(this.#packageRegister).map(packageName => {
-      return {
-        packageName,
-        versions: Object.keys(this.#packageRegister[packageName]).map(version => ({
-          version,
-          getStream: this.#packageRegister[packageName][version].getStream,
-          config: this.#packageRegister[packageName][version].config
-        }))
-      };
-    });
-  }
-
+  public packageRegister: localRegister = {};
   public registerPackage(packageConfig: packagesObject) {
     packageConfig.name = packageConfig.name?.toLowerCase()?.trim();
     packageConfig.version = packageConfig?.version?.trim();
-    if (!this.#packageRegister[packageConfig.name]) this.#packageRegister[packageConfig.name] = {};
-    this.#packageRegister[packageConfig.name][packageConfig.version] = {
+    if (!this.packageRegister) this.packageRegister = {};
+    if (!this.packageRegister[packageConfig.name]) this.packageRegister[packageConfig.name] = {};
+    if (!this.packageRegister[packageConfig.name][packageConfig.version]) this.packageRegister[packageConfig.name][packageConfig.version] = {};
+    console.log("[Internal package maneger]: Registry %s with version %s and arch %s", packageConfig.name, packageConfig.version, packageConfig.arch);
+    this.packageRegister[packageConfig.name][packageConfig.version][packageConfig.arch] = {
       getStream: packageConfig.getStrem,
       config: packageConfig.packageConfig,
+      signature: packageConfig.signature,
     };
   }
 }
 
+export function parseDebControl(control: string|Buffer) {
+  if (Buffer.isBuffer(control)) control = control.toString();
+  const controlObject: {[key: string]: string} = {};
+  for (const line of control.split(/\r?\n/)) {
+    if (/^[\w\S]+:/.test(line)) {
+      const [, key, value] = line.match(/^([\w\S]+):(.*)$/);
+      controlObject[key.trim()] = value.trim();
+    } else {
+      controlObject[Object.keys(controlObject).at(-1)] += line;
+    }
+  }
+  return controlObject;
+}
 
 export type configV1 = {
   version: 1,

@@ -1,11 +1,12 @@
 import type { manifestOptions } from "@sirherobrine23/coreutils/src/DockerRegistry/manifests.js";
+import { createExtract } from "./ar.js";
 import { WriteStream } from "node:fs";
 import { Writable } from "node:stream";
+// import { registerFunction } from "./aptRepo/repoConfig.js";
 import coreUtils, { DockerRegistry } from "@sirherobrine23/coreutils";
 import path from "node:path";
 import tar from "tar";
 import os from "node:os";
-
 
 export async function list(repo: string|manifestOptions, config?: DockerRegistry.Manifest.optionsManifests) {
   console.log("testing %o", repo);
@@ -17,9 +18,29 @@ export async function list(repo: string|manifestOptions, config?: DockerRegistry
     const piped = (await coreUtils.httpRequest.pipeFetch({url: dockerRegistry.endpointsControl.blob.get_delete(layer.digest), headers: {Authorization: `Bearer ${await DockerRegistry.Utils.getToken(dockerRegistry.repoConfig)}`}})).pipe(tar.t({
       async onentry(entry) {
         if (!entry.path.endsWith(".deb")) return;
-        files.push({
-          path: entry.path,
-          size: entry.bufferLength
+        const ar = entry.pipe(createExtract());
+        await new Promise<void>(done => {
+          ar.once("entry", (info, stream) => {
+            if (info.name !== "control.tar.gz") return;
+            stream.pipe(tar.extract({
+              onentry: (tarEntry) => {
+                if (tarEntry.path !== "control") return;
+                let controlBuffer: Buffer;
+                tarEntry.on("data", (chunk) => {
+                  if (!controlBuffer) controlBuffer = chunk;
+                  else controlBuffer = Buffer.concat([controlBuffer, chunk]);
+                });
+                tarEntry.on("end", () => {
+                  files.push({
+                    path: entry.path,
+                    size: entry.bufferLength,
+                    config: controlBuffer.toString()
+                  });
+                  done();
+                });
+              }
+            }));
+          });
         });
       }
     }));
