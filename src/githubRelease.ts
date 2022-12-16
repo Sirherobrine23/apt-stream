@@ -32,7 +32,9 @@ export async function fullConfig(config: {config: string|baseOptions<{releaseTag
   const releases = await list(config.config, config.githubToken);
   for (const {assets} of releases ?? []) for (const {download} of assets ?? []) {
     await new Promise<void>(async done => {
+      let size = 0;
       const request = await coreUtils.httpRequest.pipeFetch(download);
+      request.on("data", (chunk) => size += chunk.length);
       const ar = request.pipe(createExtract());
       const signs = Promise.all([coreUtils.extendsCrypto.createSHA256_MD5(request, "sha256", new Promise(done => request.once("end", done))), coreUtils.extendsCrypto.createSHA256_MD5(request, "md5", new Promise(done => request.once("end", done)))]).then(([sha256, md5]) => ({sha256, md5}));
       ar.on("entry", (info, stream) => {

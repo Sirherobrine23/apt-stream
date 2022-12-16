@@ -51,8 +51,8 @@ export async function createAPI(configPath: string, portListen: number, callback
 
   // dist
   // Signed Release with gpg
-  // app.get("/dist/:suite/InRelease", (req, res) => {});
-  app.get("/dist/:package/Release", (req, res) => {
+  // app.get("/dists/:suite/InRelease", (req, res) => {});
+  app.get("/dists/:package/Release", (req, res) => {
     if (!mainRegister.packageRegister[req.params.package]) return res.status(404).json({error: "Package not registred"});
     const Archs: string[] = [];
     Object.keys(mainRegister.packageRegister[req.params.package]).forEach(version => Object.keys(mainRegister.packageRegister[req.params.package][version]).forEach(arch => (!Archs.includes(arch.toLowerCase()))?Archs.push(arch.toLowerCase()):null));
@@ -66,7 +66,7 @@ export async function createAPI(configPath: string, portListen: number, callback
     res.setHeader("Content-Length", data.length);
     return res.send(data);
   });
-  app.get("/dist/:package/main/binary-:arch/Release", (req, res) => {
+  app.get("/dists/:package/main/binary-:arch/Release", (req, res) => {
     const Archs: string[] = [];
     Object.keys(mainRegister.packageRegister[req.params.package]).forEach(version => Object.keys(mainRegister.packageRegister[req.params.package][version]).forEach(arch => (!Archs.includes(arch.toLowerCase()))?Archs.push(arch.toLowerCase()):null));
     if (!Archs.includes(req.params.arch.toLowerCase())) return res.status(404).json({error: "Package arch registred"});
@@ -78,7 +78,8 @@ export async function createAPI(configPath: string, portListen: number, callback
       Architectures: [req.params.arch.toLowerCase()],
     }));
   });
-  app.get("/dist/:package/main/binary-:arch/Packages.gz", async (req, res) => {
+
+  app.get("/dists/:package/main/binary-:arch/Packages.gz", async (req, res) => {
     const packagesConfig: utils.packageGzObject[] = [];
     Object.keys(mainRegister.packageRegister[req.params.package]).forEach(version => Object.keys(mainRegister.packageRegister[req.params.package][version]).forEach(arch => {
       const data = mainRegister.packageRegister[req.params.package][version][arch];
@@ -95,6 +96,40 @@ export async function createAPI(configPath: string, portListen: number, callback
     });
     await utils.createPackagegz(res, packagesConfig);
   });
+
+
+  app.get("/dists/:package/main/binary-:arch/Packages", async (req, res) => {
+    const packagesConfig: utils.packageGzObject[] = [];
+    Object.keys(mainRegister.packageRegister[req.params.package]).forEach(version => Object.keys(mainRegister.packageRegister[req.params.package][version]).forEach(arch => {
+      const data = mainRegister.packageRegister[req.params.package][version][arch];
+      if (!data) return;
+      packagesConfig.push({
+        ...data.config as any as utils.packageGzObject,
+        Filename: format("pool/%s/%s/%s.deb", data.config.Package, data.config.Version, data.config.Architecture),
+        SHA256: data.signature.sha256,
+        MD5sum: data.signature.md5,
+        InstalledSize: data.size,
+      });
+    }));
+    res.writeHead(200, {
+      "Content-Type": "text/plain"
+    });
+    for (const packageInfo of packagesConfig) {
+      let packageData = ["package: "+packageInfo.Package];
+      packageData.push("Version: "+packageInfo.Version);
+      packageData.push("Filename: "+packageInfo.Filename);
+      packageData.push("Maintainer: "+packageInfo.Maintainer);
+      packageData.push("Architecture: "+packageInfo.Architecture);
+      if (packageInfo.InstalledSize) packageData.push("Installed-Size: "+packageInfo.InstalledSize);
+      if (packageInfo.Depends) packageData.push("Depends: "+packageInfo.Depends);
+      packageData.push("MD5sum: "+packageInfo.MD5sum);
+      packageData.push("SHA256: "+packageInfo.SHA256);
+
+      res.write(packageData.join("\n")+"\n\n");
+    }
+    res.end();
+  });
+
   app.listen(3000, callback);
   return app;
 }

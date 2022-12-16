@@ -8,6 +8,7 @@ export type packagesObject = {
   getStrem: () => Promise<Readable>,
   version: string,
   arch: string,
+  size?: number,
   signature?: {
     sha256: string,
     md5: string,
@@ -24,6 +25,7 @@ type localRegister = {
         getStream: packagesObject["getStrem"],
         config?: packagesObject["packageConfig"],
         signature?: packagesObject["signature"],
+        size?: packagesObject["size"],
       }
     }
   }
@@ -42,6 +44,7 @@ export class packageRegister {
       getStream: packageConfig.getStrem,
       config: packageConfig.packageConfig,
       signature: packageConfig.signature,
+      size: packageConfig.size,
     };
   }
 }
