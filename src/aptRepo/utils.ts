@@ -63,16 +63,8 @@ export async function createPackagegz(res: WriteStream|Writable, Packages: packa
   ReadStream._read = (_size) => {};
   ReadStream.pipe(zlib.createGzip()).pipe(res);
   for (const packageInfo of Packages) {
-    let packageData = ["package: "+packageInfo.Package];
-    packageData.push("Version: "+packageInfo.Version);
-    packageData.push("Filename: "+packageInfo.Filename);
-    packageData.push("Maintainer: "+packageInfo.Maintainer);
-    packageData.push("Architecture: "+packageInfo.Architecture);
-    if (packageInfo.InstalledSize) packageData.push("Installed-Size: "+packageInfo.InstalledSize);
-    if (packageInfo.Depends) packageData.push("Depends: "+packageInfo.Depends);
-    packageData.push("MD5sum: "+packageInfo.MD5sum);
-    packageData.push("SHA256: "+packageInfo.SHA256);
-
+    let packageData = [];
+    for (let i in packageInfo) packageData.push(`${i}: ${packageInfo[i]}`);
     ReadStream.push(packageData.join("\n")+"\n\n");
   }
   ReadStream.end();

@@ -58,6 +58,7 @@ export async function fullConfig(config: {config: string|baseOptions<{releaseTag
                 arch: config.Architecture,
                 packageConfig: config,
                 signature: sigs,
+                size,
                 getStrem: async () => coreUtils.httpRequest.pipeFetch(download),
               });
             });
