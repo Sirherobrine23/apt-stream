@@ -1,21 +1,21 @@
 {
-  "name": "ghcraptrepository",
+  "name": "node-apt",
   "version": "1.0.0",
   "description": "Replace",
   "main": "src/index.js",
   "types": "./src/index.d.ts",
   "private": false,
   "type": "module",
-  "homepage": "https://github.com/Sirherobrine23/ghcrAptRepository#readme",
+  "homepage": "https://github.com/Sirherobrine23/node-apt#readme",
   "author": "Matheus Sampaio Queiroga <srherobrine20@gmail.com> (https://sirherobrine23.org/)",
   "license": "GPL-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Sirherobrine23/ghcrAptRepository.git"
+    "url": "git+https://github.com/Sirherobrine23/node-apt.git"
   },
   "keywords": [],
   "bugs": {
-    "url": "https://github.com/Sirherobrine23/ghcrAptRepository/issues"
+    "url": "https://github.com/Sirherobrine23/node-apt/issues"
   },
   "sponsor": {
     "url": "https://github.com/sponsors/Sirherobrine23"

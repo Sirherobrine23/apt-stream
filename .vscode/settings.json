@@ -1,5 +1,8 @@
 {
   "files.exclude": {
     "**/node_modules/": true
-  }
+  },
+  "thunder-client.defaultUrl": "http://localhost:3000",
+  "thunder-client.responseLimit": 30,
+  "thunder-client.saveToWorkspace": true
 }

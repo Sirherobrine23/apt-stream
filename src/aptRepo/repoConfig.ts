@@ -1,53 +1,6 @@
 import coreUtils, { DockerRegistry } from "@sirherobrine23/coreutils";
-import { Readable } from "node:stream";
 import * as yaml from "yaml";
 import fs from "node:fs/promises";
-
-export type packagesObject = {
-  name: string,
-  getStrem: () => Promise<Readable>,
-  version: string,
-  arch: string,
-  size?: number,
-  signature?: {
-    sha256: string,
-    md5: string,
-  },
-  packageConfig?: {
-    [key: string]: string;
-  }
-};
-
-type localRegister = {
-  [name: string]: {
-    [version: string]: {
-      [arch: string]: {
-        getStream: packagesObject["getStrem"],
-        config?: packagesObject["packageConfig"],
-        signature?: packagesObject["signature"],
-        size?: packagesObject["size"],
-      }
-    }
-  }
-};
-
-export class packageRegister {
-  public packageRegister: localRegister = {};
-  public registerPackage(packageConfig: packagesObject) {
-    packageConfig.name = packageConfig.name?.toLowerCase()?.trim();
-    packageConfig.version = packageConfig?.version?.trim();
-    if (!this.packageRegister) this.packageRegister = {};
-    if (!this.packageRegister[packageConfig.name]) this.packageRegister[packageConfig.name] = {};
-    if (!this.packageRegister[packageConfig.name][packageConfig.version]) this.packageRegister[packageConfig.name][packageConfig.version] = {};
-    console.log("[Internal package maneger]: Registry %s with version %s and arch %s", packageConfig.name, packageConfig.version, packageConfig.arch);
-    this.packageRegister[packageConfig.name][packageConfig.version][packageConfig.arch] = {
-      getStream: packageConfig.getStrem,
-      config: packageConfig.packageConfig,
-      signature: packageConfig.signature,
-      size: packageConfig.size,
-    };
-  }
-}
 
 export function parseDebControl(control: string|Buffer) {
   if (Buffer.isBuffer(control)) control = control.toString();
