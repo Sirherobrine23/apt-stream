@@ -13,6 +13,12 @@ export async function createAPI(configPath: string, portListen: number, callback
     next();
   });
 
+  // Request log
+  app.use((req, _res, next) => {
+    next();
+    console.log("[%s]: From: %s, path: %s", req.protocol, req.ip, req.path);
+  });
+
   // source.list
   app.get("/sources.list", (req, res) => {
     res.setHeader("Content-type", "text/plain");
@@ -89,6 +95,7 @@ export async function createAPI(configPath: string, portListen: number, callback
         Filename: format("pool/%s/%s/%s.deb", data.config.Package, data.config.Version, data.config.Architecture),
         SHA256: data.signature.sha256,
         MD5sum: data.signature.md5,
+        InstalledSize: data.size,
       });
     }));
     res.writeHead(200, {
