@@ -17,91 +17,92 @@ export interface gnuExtract extends Writable {
   once(event: "entry", listener: (info: fileInfo, stream: Readable) => void): this;
 }
 
-export function createExtract() {
-  return new gnuExtract();
-}
-export class gnuExtract extends Writable {
-  #__locked = false;
-  #entryStream?: Readable;
-  #size = 0;
-  #check_new_file(chunk: Buffer) {
+export function createExtract(fn: (info: fileInfo, stream: Readable) => void) {
+  let __locked = false;
+  let entryStream: Readable;
+  let size = 0;
+  function check_new_file(chunk: Buffer) {
     return !!(chunk.subarray(0, 60).toString().replace(/\s+\`(\n)?$/, "").trim().match(/^([\w\s\S]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$/));
   }
-  _final(callback: (error?: Error) => void): void {
-    if (this.#entryStream) {
-      this.#entryStream.push(null);
-      this.#entryStream = undefined;
+  function _final(callback: (error?: Error) => void): void {
+    if (entryStream) {
+      entryStream.push(null);
+      entryStream = undefined;
     }
     return callback();
   }
-  _destroy(error: Error, callback: (error?: Error) => void): void {
-    if (this.#entryStream) {
-      this.#entryStream.push(null);
-      this.#entryStream = undefined;
+  function _destroy(error: Error, callback: (error?: Error) => void): void {
+    if (entryStream) {
+      entryStream.push(null);
+      entryStream = undefined;
     }
     return callback(error);
   }
-  async #__push(chunk: Buffer, callback?: (error?: Error | null) => void) {
-    if (0 < this.#size) {
-      if (this.#check_new_file(chunk.subarray(this.#size))) {
+  async function __push(chunk: Buffer, callback?: (error?: Error | null) => void) {
+    if (0 < size) {
+      if (check_new_file(chunk.subarray(size))) {
         // console.log("[Ar]: Nextfile");
-        const silpChuck = chunk.subarray(0, this.#size);
-        chunk = chunk.subarray(this.#size);
+        const silpChuck = chunk.subarray(0, size);
+        chunk = chunk.subarray(size);
         // console.log("[Ar]: Nextfile: %f", chunk.length);
-        this.#entryStream.push(silpChuck, "binary");
-        this.#entryStream.push(null);
-        this.#entryStream = undefined;
-        this.#size = 0;
+        entryStream.push(silpChuck, "binary");
+        entryStream.push(null);
+        entryStream = undefined;
+        size = 0;
         return this._write(chunk, "binary", callback);
       }
     }
-    this.#size -= chunk.length;
-    this.#entryStream.push(chunk, "binary");
+    size -= chunk.length;
+    entryStream.push(chunk, "binary");
     return callback();
   }
-  #waitMore?: Buffer;
-  async _write(chunkRemote: Buffer, encoding, callback?: (error?: Error | null) => void) {
-    if (!Buffer.isBuffer(chunkRemote)) chunkRemote = Buffer.from(chunkRemote, encoding);
-    let chunk = Buffer.from(chunkRemote);
-    if (this.#__locked === false) {
-      // console.log("[Ar]: Fist chunk length: %f", chunk.length);
-      if (this.#waitMore) {
-        chunk = Buffer.concat([this.#waitMore, chunk]);
-        this.#waitMore = undefined;
+  let waitMore: Buffer;
+  return new Writable({
+    final(callback) {return _final.call(this, callback);},
+    destroy(error, callback) {return _destroy.call(this, error, callback);},
+    write(chunkRemote, encoding, callback) {
+      if (!Buffer.isBuffer(chunkRemote)) chunkRemote = Buffer.from(chunkRemote, encoding);
+      let chunk = Buffer.from(chunkRemote);
+      if (__locked === false) {
+        // console.log("[Ar]: Fist chunk length: %f", chunk.length);
+        if (waitMore) {
+          chunk = Buffer.concat([waitMore, chunk]);
+          waitMore = undefined;
+        }
+        if (chunk.length < 70) {
+          waitMore = chunk;
+          callback();
+        }
+        if (!chunk.subarray(0, 8).toString().trim().startsWith("!<arch>")) {
+          this.destroy();
+          return callback(new Error("Not an ar file"));
+        }
+        __locked = true;
+        chunk = chunk.subarray(8);
       }
-      if (chunk.length < 70) {
-        this.#waitMore = chunk;
-        callback();
+      if (entryStream) return __push(chunk, callback);
+      const info = chunk.subarray(0, 60).toString().replace(/\s+\`(\n)?$/, "").trim();
+      chunk = chunk.subarray(60);
+      // debian-binary   1668505722  0     0     100644  4
+      const dataMathc = info.match(/^([\w\s\S]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$/);
+      if (!dataMathc) {
+        size = chunk.length;
+        return __push(chunk, callback);
       }
-      if (!chunk.subarray(0, 8).toString().trim().startsWith("!<arch>")) {
-        this.destroy();
-        return callback(new Error("Not an ar file"));
-      }
-      this.#__locked = true;
-      chunk = chunk.subarray(8);
+      const [, name, time, owner, group, mode, sizeM] = dataMathc;
+      const data: fileInfo = {
+        name: name.trim(),
+        time: new Date(parseInt(time)*1000),
+        owner: parseInt(owner),
+        group: parseInt(group),
+        mode: parseInt(mode),
+        size: parseInt(sizeM)
+      };
+      size = data.size;
+      entryStream = new Readable({read() {}});
+      fn(data, entryStream);
+      return __push(chunk, callback);
+      // process.exit(1);
     }
-    if (this.#entryStream) return this.#__push(chunk, callback);
-    const info = chunk.subarray(0, 60).toString().replace(/\s+\`(\n)?$/, "").trim();
-    chunk = chunk.subarray(60);
-    // debian-binary   1668505722  0     0     100644  4
-    const dataMathc = info.match(/^([\w\s\S]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$/);
-    if (!dataMathc) {
-      this.#size = chunk.length;
-      return this.#__push(chunk, callback);
-    }
-    const [, name, time, owner, group, mode, size] = dataMathc;
-    const data: fileInfo = {
-      name: name.trim(),
-      time: new Date(parseInt(time)*1000),
-      owner: parseInt(owner),
-      group: parseInt(group),
-      mode: parseInt(mode),
-      size: parseInt(size)
-    };
-    this.#size = data.size;
-    this.#entryStream = new Readable({read() {}});
-    this.emit("entry", data, this.#entryStream);
-    return this.#__push(chunk, callback);
-    // process.exit(1);
-  }
+  })
 }

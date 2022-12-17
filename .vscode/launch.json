@@ -9,7 +9,10 @@
       "type": "node",
       "request": "launch",
       "runtimeExecutable": "ts-node",
-      "args": ["src/aptRepo/index.ts"],
+      "args": ["src/cli.ts"],
+      "env": {
+        "DEBUG": "coreutils:*,node_apt:*"
+      },
       "cwd": "${workspaceRoot}",
       "internalConsoleOptions": "openOnSessionStart",
       "skipFiles": ["<node_internals>/**", "node_modules/**"]

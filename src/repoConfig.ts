@@ -4,18 +4,22 @@ import fs from "node:fs/promises";
 
 export type configV1 = {
   version: 1,
-  repos: {
+  repos: (({
+    from: "release",
     repo: string|{
       owner: string,
       repo: string
     },
-    from?: "oci"|"release"|"oci+release",
-    ociConfig?: DockerRegistry.Manifest.optionsManifests,
+  }|{
+    from: "oci",
+    repo: string,
+    ociConfig?: DockerRegistry.Manifest.platfomTarget,
+  }) & {
     auth?: {
       username?: string,
       password?: string
     }
-  }[]
+  })[]
 };
 
 export async function getConfig(filePath: string): Promise<configV1> {
@@ -23,11 +27,20 @@ export async function getConfig(filePath: string): Promise<configV1> {
   const configData: configV1 = yaml.parse(await fs.readFile(filePath, "utf8"));
   return {
     version: 1,
-    repos: configData?.repos?.map(({repo, auth, from, ociConfig}) => ({
-      repo,
-      from: from||"oci",
-      ociConfig,
-      auth,
-    }))||[]
+    repos: (configData?.repos ?? []).map(data => {
+      if (data.from === "oci" && typeof data.repo === "string") {
+        return {
+          repo: data.repo,
+          from: "oci",
+          auth: data.auth,
+          ociConfig: data.ociConfig
+        };
+      }
+      return {
+        repo: (typeof data.repo === "string")?data.repo:{owner: data.repo.owner, repo: data.repo.repo},
+        from: "release",
+        auth: data.auth,
+      }
+    })
   };
 }

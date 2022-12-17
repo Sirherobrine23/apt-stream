@@ -193,10 +193,8 @@ async function mainConfig(configPath: string) {
   const packageReg = new localRegistryManeger();
   Promise.all(config.repos.map(async repo => {
     if (repo.from === "release") return release.fullConfig({config: repo.repo, githubToken: repo?.auth?.password}, packageReg).catch(console.error);
-    if (repo.from === "oci") return ghcr.list(typeof repo.repo === "string" ? repo.repo : coreUtils.DockerRegistry.Utils.toManifestOptions(format("%s/%s", repo.repo.owner, repo.repo.repo)), repo.ociConfig).then(data => {
-      return ghcr.fullConfig(data, packageReg).catch(console.error);
-    }).catch(console.error);
-  })).catch(console.error);
+    if (repo.from === "oci") return ghcr.fullConfig({image: repo.repo, targetInfo: repo.ociConfig}, packageReg).catch(console.error);
+  }));
   return packageReg;
 }
 
