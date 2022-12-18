@@ -1,12 +1,10 @@
-import { localRegistryManeger, parseDebControl } from "./aptRepo.js";
-import { DockerRegistry, extendsCrypto } from "@sirherobrine23/coreutils";
-import { createExtract } from "./ar.js";
+import { debReturn, extractDebControl } from "./deb.js";
+import { DockerRegistry } from "@sirherobrine23/coreutils";
 import { Readable } from "stream";
 import tar from "tar";
-import { Decompressor } from "lzma-native";
-import { format } from "util";
 
-export async function fullConfig(imageInfo: {image: string, targetInfo?: DockerRegistry.Manifest.platfomTarget}, packageManeger: localRegistryManeger) {
+export default fullConfig;
+export async function fullConfig(imageInfo: {image: string, targetInfo?: DockerRegistry.Manifest.platfomTarget}, fn: (data: debReturn & {getStream: () => Promise<Readable>}) => void) {
   const registry = await DockerRegistry.Manifest.Manifest(imageInfo.image, imageInfo.targetInfo);
   await registry.layersStream((data) => {
     if (!(["gzip", "gz", "tar"]).some(ends => data.layer.mediaType.endsWith(ends))) {
@@ -14,44 +12,19 @@ export async function fullConfig(imageInfo: {image: string, targetInfo?: DockerR
       return null;
     }
     return data.stream.pipe(tar.list({
-      onentry(entry) {
+      async onentry(entry) {
         if (!entry.path.endsWith(".deb")) return null;
-        let fileSize = 0;
-        entry.on("data", (chunk) => fileSize += chunk.length);
-        const signs = extendsCrypto.createSHA256_MD5(entry as any, "both", new Promise(done => entry.once("end", done)));
-        return entry.pipe(createExtract((info, stream) => {
-          if (!(info.name.endsWith("control.tar.gz")||info.name.endsWith("control.tar.xz"))) return;
-          (info.name.endsWith("tar.gz")?stream:stream.pipe(Decompressor())).pipe(tar.list({
-            onentry(controlEntry) {
-              if (!controlEntry.path.endsWith("control")) return null;
-              let controlFile: Buffer;
-              controlEntry.on("data", chunck => controlFile = (!controlFile)?chunck:Buffer.concat([controlFile, chunck])).once("end", async () => {
-                const sign = await signs;
-                const control = parseDebControl(controlFile);
-                entry.on("end", () => {
-                  packageManeger.registerPackage({
-                    name: control.Package,
-                    version: control.Version,
-                    arch: control.Architecture,
-                    packageConfig: control,
-                    size: fileSize,
-                    signature: sign,
-                    from: format("oci registry, image: %s, layer: %s", imageInfo.image, data.layer.digest),
-                    getStrem: () => new Promise<Readable>(done => {
-                      registry.blobLayerStream(data.layer.digest).then((stream) => stream.pipe(tar.list({
-                        onentry(getEntry) {
-                          if (getEntry.path !== entry.path) return;
-                          done(getEntry as any);
-                        }
-                      })));
-                    }),
-                  });
-                });
-              }).on("error", console.error);
-            },
-          // @ts-ignore
-          })).on("error", console.error);
-        })).on("error", console.log);
+        const control = await extractDebControl(entry as any);
+        return fn({
+          ...control,
+          getStream: async () => {
+            return new Promise<Readable>((done, reject) => registry.blobLayerStream(data.layer.digest).then(stream => stream.pipe(tar.list({
+              onentry(getEntry) {
+                if (getEntry.path === entry.path) return done(getEntry as any);
+              }
+            }))).catch(reject));
+          },
+        });
       },
     }));
   });

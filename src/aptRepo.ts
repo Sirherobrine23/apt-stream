@@ -198,8 +198,8 @@ async function mainConfig(configPath: string) {
   const config = await getConfig(configPath);
   const packageReg = new localRegistryManeger();
   Promise.all(config.repos.map(async repo => {
-    if (repo.from === "release") return release.fullConfig({config: repo.repo, githubToken: repo?.auth?.password}, packageReg).catch(console.error);
-    if (repo.from === "oci") return ghcr.fullConfig({image: repo.repo, targetInfo: repo.ociConfig}, packageReg).catch(console.error);
+    if (repo.from === "release") return release.fullConfig({config: repo.repo, githubToken: repo?.auth?.password}, () => {}).catch(console.error);
+    if (repo.from === "oci") return ghcr.fullConfig({image: repo.repo, targetInfo: repo.ociConfig}, () => {}).catch(console.error);
   }));
   return packageReg;
 }
