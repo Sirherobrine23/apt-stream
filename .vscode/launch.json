@@ -11,7 +11,7 @@
       "runtimeExecutable": "ts-node",
       "args": ["src/cli.ts"],
       "env": {
-        "DEBUG": "coreutils:*,node_apt:*"
+        "DEBUG": "coreutils:*"
       },
       "cwd": "${workspaceRoot}",
       "internalConsoleOptions": "openOnSessionStart",

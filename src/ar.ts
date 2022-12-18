@@ -18,6 +18,7 @@ export interface gnuExtract extends Writable {
 }
 
 export function createExtract(fn: (info: fileInfo, stream: Readable) => void) {
+  const __writed = new Writable();
   let __locked = false;
   let entryStream: Readable;
   let size = 0;
@@ -49,7 +50,7 @@ export function createExtract(fn: (info: fileInfo, stream: Readable) => void) {
         entryStream.push(null);
         entryStream = undefined;
         size = 0;
-        return this._write(chunk, "binary", callback);
+        return __writed._write(chunk, "binary", callback);
       }
     }
     size -= chunk.length;
@@ -57,52 +58,51 @@ export function createExtract(fn: (info: fileInfo, stream: Readable) => void) {
     return callback();
   }
   let waitMore: Buffer;
-  return new Writable({
-    final(callback) {return _final.call(this, callback);},
-    destroy(error, callback) {return _destroy.call(this, error, callback);},
-    write(chunkRemote, encoding, callback) {
-      if (!Buffer.isBuffer(chunkRemote)) chunkRemote = Buffer.from(chunkRemote, encoding);
-      let chunk = Buffer.from(chunkRemote);
-      if (__locked === false) {
-        // console.log("[Ar]: Fist chunk length: %f", chunk.length);
-        if (waitMore) {
-          chunk = Buffer.concat([waitMore, chunk]);
-          waitMore = undefined;
-        }
-        if (chunk.length < 70) {
-          waitMore = chunk;
-          callback();
-        }
-        if (!chunk.subarray(0, 8).toString().trim().startsWith("!<arch>")) {
-          this.destroy();
-          return callback(new Error("Not an ar file"));
-        }
-        __locked = true;
-        chunk = chunk.subarray(8);
+  __writed._write = (chunkRemote, encoding, callback) => {
+    if (!Buffer.isBuffer(chunkRemote)) chunkRemote = Buffer.from(chunkRemote, encoding);
+    let chunk = Buffer.from(chunkRemote);
+    if (__locked === false) {
+      // console.log("[Ar]: Fist chunk length: %f", chunk.length);
+      if (waitMore) {
+        chunk = Buffer.concat([waitMore, chunk]);
+        waitMore = undefined;
       }
-      if (entryStream) return __push(chunk, callback);
-      const info = chunk.subarray(0, 60).toString().replace(/\s+\`(\n)?$/, "").trim();
-      chunk = chunk.subarray(60);
-      // debian-binary   1668505722  0     0     100644  4
-      const dataMathc = info.match(/^([\w\s\S]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$/);
-      if (!dataMathc) {
-        size = chunk.length;
-        return __push(chunk, callback);
+      if (chunk.length < 70) {
+        waitMore = chunk;
+        callback();
       }
-      const [, name, time, owner, group, mode, sizeM] = dataMathc;
-      const data: fileInfo = {
-        name: name.trim(),
-        time: new Date(parseInt(time)*1000),
-        owner: parseInt(owner),
-        group: parseInt(group),
-        mode: parseInt(mode),
-        size: parseInt(sizeM)
-      };
-      size = data.size;
-      entryStream = new Readable({read() {}});
-      fn(data, entryStream);
-      return __push(chunk, callback);
-      // process.exit(1);
+      if (!chunk.subarray(0, 8).toString().trim().startsWith("!<arch>")) {
+        this.destroy();
+        return callback(new Error("Not an ar file"));
+      }
+      __locked = true;
+      chunk = chunk.subarray(8);
     }
-  })
+    if (entryStream) return __push(chunk, callback);
+    const info = chunk.subarray(0, 60).toString().replace(/\s+\`(\n)?$/, "").trim();
+    chunk = chunk.subarray(60);
+    // debian-binary   1668505722  0     0     100644  4
+    const dataMathc = info.match(/^([\w\s\S]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)$/);
+    if (!dataMathc) {
+      size = chunk.length;
+      return __push(chunk, callback);
+    }
+    const [, name, time, owner, group, mode, sizeM] = dataMathc;
+    const data: fileInfo = {
+      name: name.trim(),
+      time: new Date(parseInt(time)*1000),
+      owner: parseInt(owner),
+      group: parseInt(group),
+      mode: parseInt(mode),
+      size: parseInt(sizeM)
+    };
+    size = data.size;
+    entryStream = new Readable({read() {}});
+    fn(data, entryStream);
+    return __push(chunk, callback);
+    // process.exit(1);
+  }
+  __writed._final = (callback) => {return _final.call(this, callback);};
+  __writed._destroy = (error, callback) => {return _destroy.call(this, error, callback);};
+  return __writed;
 }
