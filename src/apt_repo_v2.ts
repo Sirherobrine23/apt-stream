@@ -1,10 +1,10 @@
-import { Readable } from "node:stream";
+import { packageControl } from "./deb.js";
 import { extendsCrypto } from "@sirherobrine23/coreutils";
+import { PassThrough, Readable } from "node:stream";
 import { format } from "node:util";
-import * as lzma from "lzma-native";
+import { Compressor as lzmaCompress } from "lzma-native";
 import express from "express";
 import zlib from "node:zlib";
-import { packageControl } from "./deb.js";
 
 type registerOobject = {
   [packageName: string]: {
@@ -18,6 +18,7 @@ export function packageManeger(RootOptions?: {origin?: string, lebel?: string}) 
   const localRegister: registerOobject = {};
   function pushPackage(control: packageControl, getStream: () => Promise<Readable>, from?: string) {
     if (!localRegister[control.Package]) localRegister[control.Package] = [];
+    console.log("Register %s/%s-5s", control.Package, control.Version, control.Architecture);
     localRegister[control.Package].push({
       getStream,
       control,
@@ -29,116 +30,134 @@ export function packageManeger(RootOptions?: {origin?: string, lebel?: string}) 
     return localRegister;
   }
 
-  async function createPackages(options?: {packageName?: string, Arch?: string}, streams?: (data: {gz: zlib.Gzip, xz: lzma.JSLzmaStream, raw: Readable}) => void) {
+  function createPackages(options?: {packageName?: string, Arch?: string}) {
     if (options?.packageName === "all") options.packageName = undefined;
-    const sizes = {gz: 0, xz: 0, raw: 0};
-    const raw = new Readable();
-    const rawHASH = extendsCrypto.createSHA256_MD5(raw, "both", new Promise(resolve => raw.on("end", resolve)));
-    raw.on("data", chunck => sizes.raw += chunck.length);
+    const raw = new PassThrough();
     const gz = raw.pipe(zlib.createGzip());
-    const gzHASH = extendsCrypto.createSHA256_MD5(gz, "both", new Promise(resolve => gz.on("end", resolve)));
-    gz.on("data", chunck => sizes.gz += chunck.length);
-    const xz = raw.pipe(lzma.createCompressor());
-    const xzHASH = extendsCrypto.createSHA256_MD5(xz, "both", new Promise(resolve => xz.on("end", resolve)));
-    xz.on("data", chunck => sizes.xz += chunck.length);
-    if (streams) streams({gz, xz, raw});
+    const xz = raw.pipe(lzmaCompress());
 
-    const writeObject = (packageData: (typeof localRegister)[string][number]) => {
+    const writeObject = async (packageData: (typeof localRegister)[string][number]) => {
       const control = packageData.control;
       control.Filename = format("pool/%s/%s/%s.deb", control.Package, control.Architecture, control.Version);
       const desc = control.Description;
       delete control.Description;
-      control.Description = desc;
-      const data = Buffer.from(Object.keys(control).map(key => `${key}: ${control[key]}`).join("\n") + "\n\n", "utf8");
-      raw.push(data);
+      control.Description = (desc?.split("\n") ?? [])[0];
+      if (!control.Description) control.Description = "No description";
+      let line = "";
+      Object.keys(control).forEach(key => line += (`${key}: ${control[key]}\n`));
+      raw.push(Buffer.from(line+"\n", "utf8"));
     }
 
-    if (!!options?.packageName) {
-      const packageVersions = localRegister[options?.packageName];
-      if (!packageVersions) {
-        raw.push(null);
-        raw.destroy();
-        throw new Error("Package not found");
-      }
-      for (const packageData of packageVersions) {
-        if (options?.Arch && packageData.control.Architecture !== options?.Arch) continue;
-        writeObject(packageData);
-      }
-    } else {
-      for (const packageName in localRegister) {
-        for (const packageData of localRegister[packageName]) {
+    async function getStart() {
+      if (!!options?.packageName) {
+        const packageVersions = localRegister[options?.packageName];
+        if (!packageVersions) {
+          raw.push(null);
+          raw.destroy();
+          throw new Error("Package not found");
+        }
+        for (const packageData of packageVersions) {
           if (options?.Arch && packageData.control.Architecture !== options?.Arch) continue;
-          writeObject(packageData);
+          await writeObject(packageData);
+        }
+      } else {
+        for (const packageName in localRegister) {
+          for (const packageData of localRegister[packageName]) {
+            if (options?.Arch && packageData.control.Architecture !== options?.Arch) continue;
+            await writeObject(packageData);
+          }
         }
       }
+      raw.push(null);
+      raw.end();
     }
-
-    raw.push(null);
-    // raw.end();
-    // raw.destroy();
-
     return {
-      raw: {
-        ...(await rawHASH),
-        size: sizes.raw,
-      },
-      gz: {
-        ...(await gzHASH),
-        size: sizes.gz,
-      },
-      xz: {
-        ...(await xzHASH),
-        size: sizes.xz,
-      }
+      getStart,
+      raw,
+      gz,
+      xz,
     };
   }
 
-  async function createRelease(options?: {packageName?: string, Arch?: string, includesHashs?: boolean}) {
+  async function packageHASH(options?: {packageName?: string, Arch?: string}) {
+    return new Promise<{raw: {md5: string, sha256: string, size: number}, gz: {md5: string, sha256: string, size: number}, xz: {md5: string, sha256: string, size: number}}>(async (resolve, reject) => {
+      const strems = createPackages(options);
+      const size = {
+        raw: 0,
+        gz: 0,
+        xz: 0,
+      };
+      const raw = extendsCrypto.createSHA256_MD5(strems.raw, "both");
+      const gz = extendsCrypto.createSHA256_MD5(strems.gz, "both", new Promise((resolve) => {
+        strems.gz.on("end", resolve);
+      }));
+      const xz = extendsCrypto.createSHA256_MD5(strems.xz, "both", new Promise((resolve) => {
+        strems.xz.on("end", resolve).on("error", reject);
+      }))
+      strems.raw.on("data", (data) => size.raw += data.length);
+      strems.gz.on("data", (data) => size.gz += data.length);
+      strems.xz.on("data", (data) => size.xz += data.length);
+      strems.getStart().catch(reject);
+      const rawHash = await raw;
+      const gzHash = await gz;
+      const xzHash = await xz;
+      resolve({
+        raw: {
+          md5: rawHash.md5,
+          sha256: rawHash.sha256,
+          size: size.raw,
+        },
+        gz: {
+          md5: gzHash.md5,
+          sha256: gzHash.sha256,
+          size: size.gz,
+        },
+        xz: {
+          md5: xzHash.md5,
+          sha256: xzHash.sha256,
+          size: size.xz,
+        },
+      });
+    });
+  }
 
+  async function createRelease(options?: {packageName?: string, Arch?: string, includesHashs?: boolean}) {
     const textLines = [
       `Lebel: ${RootOptions?.lebel||"node-apt"}`,
       `Date: ${new Date().toUTCString()}`
     ];
 
+    const components = ["main"];
+    const archs: string[] = [];
+
     if (options?.packageName) {
       const packageData = localRegister[options?.packageName];
       if (!packageData) throw new Error("Package not found");
-      const archs = [...(new Set(localRegister[options?.packageName].map((p) => p.control.Architecture)))];
-      const components = [...(new Set(localRegister[options?.packageName].map((p) => p.control.Section||"main")))];
       textLines.push(`Suite: ${options?.packageName}`);
-      textLines.push(`Architectures: ${archs.filter(arch => !options?.Arch ? true : arch === options?.Arch).join(" ")}`);
-      textLines.push(`Components: ${components.join(" ")}`);
-      if (options?.includesHashs) {
-        const Hashs = await createPackages({packageName: options?.packageName});
-        textLines.push(`MD5Sum:`);
-        textLines.push(`  ${Hashs.raw.md5}  ${Hashs.raw.size}  main/binary-${options?.Arch||"all"}/Packages`);
-        textLines.push(`  ${Hashs.xz.md5}  ${Hashs.xz.size}  main/binary-${options?.Arch||"all"}/Packages.xz`);
-        textLines.push(`  ${Hashs.gz.md5}  ${Hashs.gz.size}  main/binary-${options?.Arch||"all"}/Packages.gz`);
-        textLines.push(`SHA256:`);
-        textLines.push(`  ${Hashs.raw.sha256}  ${Hashs.raw.size}  main/binary-${options?.Arch||"all"}/Packages`);
-        textLines.push(`  ${Hashs.xz.sha256}  ${Hashs.xz.size}  main/binary-${options?.Arch||"all"}/Packages.xz`);
-        textLines.push(`  ${Hashs.gz.sha256}  ${Hashs.gz.size}  main/binary-${options?.Arch||"all"}/Packages.gz`);
-      }
+      archs.push(...([...(new Set(localRegister[options?.packageName].map((p) => p.control.Architecture)))]).filter(arch => (options?.Arch === "all"||!options?.Arch) ? true : arch === options.Arch));
     } else {
       // For all packages
-      // const archs = [...(new Set(Object.values(localRegister).flat().map((p) => p.control.Architecture)))];
-      // textLines.push(`Suite: ${options?.packageName}`);
-      // textLines.push(`Architectures: ${archs.filter(arch => !options?.Arch ? true : arch === options?.Arch).join(" ")}`);
-      // textLines.push("Components: main");
-      // if (options?.includesHashs) {
-      //   const Hashs = await createPackages();
-      //   textLines.push(`MD5Sum:`);
-      //   textLines.push(`  ${Hashs.raw.md5}  ${Hashs.raw.size}  main/binary-${options?.Arch||"all"}/Packages`);
-      //   textLines.push(`  ${Hashs.xz.md5}  ${Hashs.xz.size}  main/binary-${options?.Arch||"all"}/Packages.xz`);
-      //   textLines.push(`  ${Hashs.gz.md5}  ${Hashs.gz.size}  main/binary-${options?.Arch||"all"}/Packages.gz`);
-      //   textLines.push(`SHA256:`);
-      //   textLines.push(`  ${Hashs.raw.sha256}  ${Hashs.raw.size}  main/binary-${options?.Arch||"all"}/Packages`);
-      //   textLines.push(`  ${Hashs.xz.sha256}  ${Hashs.xz.size}  main/binary-${options?.Arch||"all"}/Packages.xz`);
-      //   textLines.push(`  ${Hashs.gz.sha256}  ${Hashs.gz.size}  main/binary-${options?.Arch||"all"}/Packages.gz`);
-      // }
-      throw new Error("Not implemented");
+      archs.push(...(([...(new Set(Object.values(localRegister).flat().map((p) => p.control.Architecture)))]).filter(arch => (options?.Arch === "all"||!options?.Arch) ? true : arch === options.Arch)));
+      textLines.push("Suite: all");
     }
-    textLines.push("\n");
+
+    textLines.push(`Components: ${components.join(" ")}`, `Architectures: ${archs.join(" ")}`);
+    if (options?.includesHashs) {
+      const DataHashs = await Promise.all(archs.map(async (arch) => ({arch, hash: await packageHASH({Arch: arch})})));
+      textLines.push(`MD5Sum:`);
+      DataHashs.forEach(data => {
+        textLines.push(`  ${data.hash.raw.md5}  ${data.hash.raw.size}  ${data.arch}/binary-${data.arch}/Packages`);
+        textLines.push(`  ${data.hash.gz.md5}  ${data.hash.gz.size}  ${data.arch}/binary-${data.arch}/Packages.gz`);
+        textLines.push(`  ${data.hash.xz.md5}  ${data.hash.xz.size}  ${data.arch}/binary-${data.arch}/Packages.xz`);
+      });
+      textLines.push(`SHA256:`);
+      DataHashs.forEach(data => {
+        textLines.push(`  ${data.hash.raw.sha256}  ${data.hash.raw.size}  ${data.arch}/binary-${data.arch}/Packages`);
+        textLines.push(`  ${data.hash.gz.sha256}  ${data.hash.gz.size}  ${data.arch}/binary-${data.arch}/Packages.gz`);
+        textLines.push(`  ${data.hash.xz.sha256}  ${data.hash.xz.size}  ${data.arch}/binary-${data.arch}/Packages.xz`);
+      });
+    }
+    textLines.push("");
     // convert to string
     return textLines.join("\n");
   }
@@ -188,15 +207,21 @@ export default async function repo(aptConfig: {}) {
   // Components
   app.get("/dists/:suite/:component/binary-:arch/Packages(.(gz|xz)|)", (req, res, next) => {
     const {suite, arch} = req.params;
-    registry.createPackages({packageName: suite, Arch: arch}, (streamers) => {
-      if (req.path.endsWith(".gz")) {
-        streamers.gz.pipe(res.writeHead(200, {"Content-Encoding": "application/x-gzip"}));
-      } else if (req.path.endsWith(".xz")) {
-        streamers.xz.pipe(res.writeHead(200, {"Content-Encoding": "application/x-xz"}));
-      } else {
-        streamers.raw.pipe(res.writeHead(200, {"Content-Encoding": "text/plain"}));
-      }
-    }).catch(next);
+    const streams = registry.createPackages({packageName: suite, Arch: arch});
+    if (req.path.endsWith(".gz")) {
+      streams.gz.pipe(res.writeHead(200, {
+        "Content-Type": "application/x-gzip",
+      }));
+    } else if (req.path.endsWith(".xz")) {
+      streams.xz.pipe(res.writeHead(200, {
+        "Content-Type": "application/x-xz",
+      }));
+    } else {
+      streams.raw.pipe(res.writeHead(200, {
+        "Content-Type": "text/plain",
+      }));
+    }
+    return streams.getStart();
   });
 
   // No Page
