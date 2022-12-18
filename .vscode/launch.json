@@ -8,15 +8,11 @@
       "name": "Lauch API",
       "type": "node",
       "request": "launch",
-      "runtimeExecutable": "ts-node",
-      "args": ["src/cli.ts"],
-      "env": {
-        "DEBUG": "coreutils:*"
-      },
-      "cwd": "${workspaceRoot}",
       "internalConsoleOptions": "openOnSessionStart",
-      "skipFiles": ["<node_internals>/**", "node_modules/**"]
+      "skipFiles": ["<node_internals>/**", "node_modules/**"],
+      "cwd": "${workspaceRoot}",
+      "runtimeExecutable": "ts-node",
+      "args": ["src/index.ts"]
     }
-
   ]
 }

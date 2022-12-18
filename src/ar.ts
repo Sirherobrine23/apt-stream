@@ -8,14 +8,6 @@ type fileInfo = {
   mode: number,
   size: number
 };
-export interface gnuExtract extends Writable {
-  on<U extends Parameters<Writable["on"]>>(...args: U): this;
-  once<U extends Parameters<Writable["on"]>>(...args: U): this;
-  // once<U extends Parameters<Writable["once"]>>(event: U[0], listener: U[1]): this;
-
-  on(event: "entry", listener: (info: fileInfo, stream: Readable) => void): this;
-  once(event: "entry", listener: (info: fileInfo, stream: Readable) => void): this;
-}
 
 export function createExtract(fn: (info: fileInfo, stream: Readable) => void) {
   const __writed = new Writable();

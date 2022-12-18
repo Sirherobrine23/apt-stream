@@ -1,8 +1,10 @@
-import { parseDebControl } from "./aptRepo/index.js";
+import { parseDebControl } from "./aptRepo.js";
 import { createExtract } from "./ar.js";
-import coreUtils from "@sirherobrine23/coreutils";
+import coreUtils, { extendsCrypto } from "@sirherobrine23/coreutils";
 import tar from "tar";
-import { localRegistryManeger } from "./aptRepo/index.js";
+import { localRegistryManeger } from "./aptRepo.js";
+import { format } from "util";
+import { Decompressor } from "lzma-native";
 
 export type baseOptions<T extends {} = {}> = {
   repo: string,
@@ -31,14 +33,13 @@ export async function list(config: string|baseOptions<{releaseTag?: string}>, gi
 
 export async function fullConfig(config: {config: string|baseOptions<{releaseTag?: string}>, githubToken?: string}, packageManeger: localRegistryManeger) {
   const releases = await list(config.config, config.githubToken);
-  for (const {assets} of releases ?? []) for (const {download} of assets ?? []) {
-    await new Promise<void>(async done => {
-      let size = 0;
+  for (const {assets, tag} of releases ?? []) for (const {download} of assets ?? []) {
+    let size = 0;
       const request = (await coreUtils.httpRequest.pipeFetch(download)).on("data", (chunk) => size += chunk.length);
-      const signs = Promise.all([coreUtils.extendsCrypto.createSHA256_MD5(request, "sha256", new Promise(done => request.once("end", done))), coreUtils.extendsCrypto.createSHA256_MD5(request, "md5", new Promise(done => request.once("end", done)))]).then(([sha256, md5]) => ({sha256, md5}));
+      const signs = extendsCrypto.createSHA256_MD5(request, "both", new Promise(done => request.on("end", done)));
       request.pipe(createExtract((info, stream) => {
-        if (!info.name.endsWith("control.tar.gz")) return null;
-        return stream.pipe(tar.list({
+        if (!(info.name.endsWith("control.tar.gz")||info.name.endsWith("control.tar.xz"))) return;
+        (info.name.endsWith("tar.gz")?stream:stream.pipe(Decompressor())).pipe(tar.list({
           onentry: (tarEntry) => {
             if (!tarEntry.path.endsWith("control")) return;
             let controlBuffer: Buffer;
@@ -47,23 +48,22 @@ export async function fullConfig(config: {config: string|baseOptions<{releaseTag
               else controlBuffer = Buffer.concat([controlBuffer, chunk]);
             }).on("error", console.log);
             request.on("end", async () => {
-              done();
-              const config = parseDebControl(controlBuffer);
-              if (!(config.Package && config.Version && config.Architecture)) return;
+              const debConfig = parseDebControl(controlBuffer);
+              if (!(debConfig.Package && debConfig.Version && debConfig.Architecture)) return;
               const sigs = await signs;
               packageManeger.registerPackage({
-                name: config.Package,
-                version: config.Version,
-                arch: config.Architecture,
-                packageConfig: config,
+                name: debConfig.Package,
+                version: debConfig.Version,
+                arch: debConfig.Architecture,
+                packageConfig: debConfig,
                 signature: sigs,
                 size,
+                from: format("github release, tag: %s, repo: %s", tag, config.config),
                 getStrem: async () => coreUtils.httpRequest.pipeFetch(download),
               });
             }).on("error", console.log);
           }
         }));
       })).on("error", console.log);
-    });
   }
 }

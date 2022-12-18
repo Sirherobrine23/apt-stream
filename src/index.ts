@@ -1,4 +1,15 @@
-export * as configManeger from "./repoConfig.js";
-export * as ghcr from "./githubGhcr.js";
-export * as release from "./githubRelease.js";
-export * as aptServer from "./aptRepo/index.js";
+#!/usr/bin/env node
+import yargs from "yargs";
+import { createAPI } from "./aptRepo.js";
+yargs(process.argv.slice(2)).wrap(null).strict().help().option("cofig-path", {
+  type: "string",
+  default: process.cwd()+"/repoconfig.yml",
+}).option("port", {
+  type: "number",
+  default: 3000,
+}).parseAsync().then(options => {
+  return createAPI({
+    configPath: options["cofig-path"],
+    portListen: options.port,
+  });
+});

@@ -1,9 +1,9 @@
 import { format } from "node:util";
 import { WriteStream } from "node:fs";
 import { PassThrough, Readable, Writable } from "node:stream";
-import { getConfig } from "../repoConfig.js";
-import * as ghcr from "../githubGhcr.js";
-import * as release from "../githubRelease.js";
+import { getConfig } from "./repoConfig.js";
+import * as ghcr from "./oci_registry.js";
+import * as release from "./githubRelease.js";
 import zlib from "node:zlib";
 import express from "express";
 import coreUtils from "@sirherobrine23/coreutils";
@@ -76,6 +76,7 @@ export type registryPackageData = {
   version: string,
   arch: string,
   size?: number,
+  from?: string,
   signature?: {
     sha256: string,
     md5: string,
@@ -93,6 +94,7 @@ type localRegister = {
         config?: registryPackageData["packageConfig"],
         signature?: registryPackageData["signature"],
         size?: registryPackageData["size"],
+        from?: registryPackageData["from"],
       }
     }
   }
@@ -135,7 +137,7 @@ export class localRegistryManeger {
   public async createPackage(compress: boolean, name: string, arch: string, res: WriteStream|Writable|PassThrough = new PassThrough({read(){}, write(){}})) {
     const sign: {sha256?: {hash: string, size: number}, md5?: {hash: string, size: number}, size: number} = {size: 0};
     const Packages: packagesObject[] = [];
-    if (!this.packageRegister[name]) throw new Error("Package not found");
+    if (!this.packageRegister[name]) throw new Error(format("%s not found", name));
     for (const version in this.packageRegister[name]) {
       const packageData = this.packageRegister[name][version][arch];
       if (!packageData) continue;
@@ -157,18 +159,22 @@ export class localRegistryManeger {
       });
     }
     let vsize = 0;
-    let waitPromises: Promise<any>[] = [];
     const rawStream = new PassThrough({read(){}, write(){}});
     if (compress) {
       const ReadStream = new PassThrough({read(){}, write(){}});
       const gzip = ReadStream.pipe(zlib.createGzip());
       gzip.pipe(res);
       gzip.pipe(rawStream);
+      gzip.on("data", (chunk) => vsize += chunk.length);
       res = ReadStream;
-    }
-    rawStream.on("data", (chunk) => vsize += chunk.length);
-    waitPromises.push(coreUtils.extendsCrypto.createSHA256_MD5(rawStream, "sha256", new Promise(done => rawStream.once("close", done))).then(sha256 => sign.sha256 = {hash: sha256, size: vsize}));
-    waitPromises.push(coreUtils.extendsCrypto.createSHA256_MD5(rawStream, "md5", new Promise(done => rawStream.once("close", done))).then(md5 => sign.md5 = {hash: md5, size: vsize}));
+    } else rawStream.on("data", (chunk) => vsize += chunk.length);
+    let waitHashs = coreUtils.extendsCrypto.createSHA256_MD5(rawStream, "both", new Promise(done => {
+      rawStream.on("end", () => setTimeout(done, 500));
+      rawStream.on("close", () => setTimeout(done, 500));
+    })).then(data => {
+      sign.sha256 = {hash: data.sha256, size: vsize};
+      sign.md5 = {hash: data.md5, size: vsize};
+    });
     for (const packageInfo of Packages) {
       let packageData = [];
       for (let i in packageInfo) packageData.push(`${i}: ${packageInfo[i]||""}`);
@@ -183,7 +189,7 @@ export class localRegistryManeger {
     res.destroy();
     rawStream.end();
     rawStream.destroy();
-    await Promise.all(waitPromises);
+    await waitHashs;
     return sign;
   }
 }
@@ -234,12 +240,12 @@ export async function createAPI(apiConfig: apiConfig) {
     const Archs: string[] = [];
     Object.keys(mainRegister.packageRegister[req.params.package]).forEach(version => Object.keys(mainRegister.packageRegister[req.params.package][version]).forEach(arch => (!Archs.includes(arch.toLowerCase()))?Archs.push(arch.toLowerCase()):null));
     const shas: ReleaseOptions["sha256"] = [];
-    // for (const arch of Archs) {
-    //   const Packagegz = await mainRegister.createPackage(true, req.params.package, arch);
-    //   const Package = await mainRegister.createPackage(false, req.params.package, arch);
-    //   if (Packagegz?.sha256?.hash) shas.push({file: format("main/binary-%s/Packages.gz", arch), sha256: Packagegz.sha256.hash, size: Packagegz.sha256.size});
-    //   if (Package?.sha256?.hash) shas.push({file: format("main/binary-%s/Packages", arch), sha256: Package.sha256.hash, size: Package.sha256.size});
-    // }
+    for (const arch of Archs) {
+      const Packagegz = await mainRegister.createPackage(true, req.params.package, arch);
+      const Package = await mainRegister.createPackage(false, req.params.package, arch);
+      if (Packagegz?.sha256?.hash) shas.push({file: format("main/binary-%s/Packages.gz", arch), sha256: Packagegz.sha256.hash, size: Packagegz.sha256.size});
+      if (Package?.sha256?.hash) shas.push({file: format("main/binary-%s/Packages", arch), sha256: Package.sha256.hash, size: Package.sha256.size});
+    }
     const data = mountRelease({
       Origin: apiConfig.repositoryOptions?.Origin||"node-apt",
       lebel: apiConfig.repositoryOptions?.lebel,
@@ -269,7 +275,7 @@ export async function createAPI(apiConfig: apiConfig) {
   });
 
   // binary packages
-  app.get("/dists/:package/main/binary-:arch/Packages(.gz|)", async (req, res) => mainRegister.createPackage(req.path.endsWith(".gz"), req.params.package, req.params.arch, res.writeHead(200, {"Content-Type": req.path.endsWith(".gz") ? "application/x-gzip" : "text/plain"})));
+  app.get("/dists/:package/main/binary-:arch/Packages(.gz|)", (req, res, next) => mainRegister.createPackage(req.path.endsWith(".gz"), req.params.package, req.params.arch, res.writeHead(200, {"Content-Type": req.path.endsWith(".gz") ? "application/x-gzip" : "text/plain"})).catch(next));
 
   // source.list
   app.get("/*.list", (req, res) => {

@@ -1,9 +1,10 @@
-import { localRegistryManeger, parseDebControl } from "./aptRepo/index.js";
+import { localRegistryManeger, parseDebControl } from "./aptRepo.js";
 import { DockerRegistry, extendsCrypto } from "@sirherobrine23/coreutils";
 import { createExtract } from "./ar.js";
 import { Readable } from "stream";
 import tar from "tar";
 import { Decompressor } from "lzma-native";
+import { format } from "util";
 
 export async function fullConfig(imageInfo: {image: string, targetInfo?: DockerRegistry.Manifest.platfomTarget}, packageManeger: localRegistryManeger) {
   const registry = await DockerRegistry.Manifest.Manifest(imageInfo.image, imageInfo.targetInfo);
@@ -17,7 +18,7 @@ export async function fullConfig(imageInfo: {image: string, targetInfo?: DockerR
         if (!entry.path.endsWith(".deb")) return null;
         let fileSize = 0;
         entry.on("data", (chunk) => fileSize += chunk.length);
-        const signs = Promise.all([extendsCrypto.createSHA256_MD5(entry as any, "sha256", new Promise(done => entry.once("end", done))), extendsCrypto.createSHA256_MD5(entry as any, "md5", new Promise(done => entry.once("end", done)))]).then(([sha256, md5]) => ({sha256, md5}));
+        const signs = extendsCrypto.createSHA256_MD5(entry as any, "both", new Promise(done => entry.once("end", done)));
         return entry.pipe(createExtract((info, stream) => {
           if (!(info.name.endsWith("control.tar.gz")||info.name.endsWith("control.tar.xz"))) return;
           (info.name.endsWith("tar.gz")?stream:stream.pipe(Decompressor())).pipe(tar.list({
@@ -35,6 +36,7 @@ export async function fullConfig(imageInfo: {image: string, targetInfo?: DockerR
                     packageConfig: control,
                     size: fileSize,
                     signature: sign,
+                    from: format("oci registry, image: %s, layer: %s", imageInfo.image, data.layer.digest),
                     getStrem: () => new Promise<Readable>(done => {
                       registry.blobLayerStream(data.layer.digest).then((stream) => stream.pipe(tar.list({
                         onentry(getEntry) {
@@ -47,7 +49,8 @@ export async function fullConfig(imageInfo: {image: string, targetInfo?: DockerR
                 });
               }).on("error", console.error);
             },
-          }))
+          // @ts-ignore
+          })).on("error", console.error);
         })).on("error", console.log);
       },
     }));
