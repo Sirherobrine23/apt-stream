@@ -18,11 +18,16 @@ export async function fullConfig(imageInfo: {image: string, targetInfo?: DockerR
         return fn({
           ...control,
           getStream: async () => {
-            return new Promise<Readable>((done, reject) => registry.blobLayerStream(data.layer.digest).then(stream => stream.pipe(tar.list({
-              onentry(getEntry) {
-                if (getEntry.path === entry.path) return done(getEntry as any);
-              }
-            }))).catch(reject));
+            return new Promise<Readable>((done, reject) => registry.blobLayerStream(data.layer.digest).then(stream => {
+              stream.on("error", reject);
+              stream.pipe(tar.list({
+                onentry(getEntry) {
+                  if (getEntry.path !== entry.path) return null;
+                  return done(getEntry as any);
+                }
+              // @ts-ignore
+              }).on("error", reject));
+            }).catch(reject));
           },
         });
       },

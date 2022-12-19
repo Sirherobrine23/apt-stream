@@ -39,7 +39,7 @@ export function parseControl(rawControlFile: string) {
 
 export type debReturn = Awaited<ReturnType<typeof extractDebControl>>;
 
-export async function extractDebControl(debStream: Readable) {
+export async function extractDebControl(debStream: Readable, endPromise: Promise<void> = new Promise(done => debStream.once("end", done))) {
   return new Promise<{size: number, control: packageControl}>((done, reject) => {
     let fileSize = 0;
     debStream.on("data", (chunk) => fileSize += chunk.length);
@@ -53,7 +53,7 @@ export async function extractDebControl(debStream: Readable) {
           controlEntry.on("data", chunck => controlFile = (!controlFile)?chunck:Buffer.concat([controlFile, chunck])).once("end", async () => {
             const sign = await signs;
             const control = parseControl(controlFile.toString());
-            debStream.on("end", () => {
+            endPromise.then(() => {
               control.MD5sum = sign.md5;
               control.SHA256 = sign.sha256;
               control.Size = fileSize;

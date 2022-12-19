@@ -1,0 +1,6 @@
+node_modules/
+.devcontainer/
+.vscode/
+.github/
+*.d.ts
+*.js

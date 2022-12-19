@@ -4,6 +4,7 @@ import repo from "./apt_repo_v2.js";
 import { getConfig } from "./repoConfig.js";
 import github_release from "./githubRelease.js";
 import oci_registry from "./oci_registry.js";
+import { CronJob } from "cron";
 
 yargs(process.argv.slice(2)).wrap(null).strict().help().option("cofig-path", {
   type: "string",
@@ -12,12 +13,34 @@ yargs(process.argv.slice(2)).wrap(null).strict().help().option("cofig-path", {
   type: "number",
   default: 3000,
 }).parseAsync().then(async options => {
-  const { app, registry } = await repo();
-  app.listen(options.port, () => {
-    console.log(`Server listening on port ${options.port}`);
-  });
-  Promise.all((await getConfig(options["cofig-path"])).repos.map(async repo => {
-    if (repo.from === "oci") return oci_registry({image: repo.repo, targetInfo: repo.ociConfig}, data => registry.pushPackage(data.control, data.getStream)).catch(console.error);
-    else if (repo.from === "release") return github_release({config: repo.repo, githubToken: repo.auth.password}, data => registry.pushPackage(data.control, data.getStream)).catch(console.error);
-  })).catch(console.error);
+  const config = await getConfig(options["cofig-path"]);
+  const { app, registry } = await repo(config);
+  app.listen(options.port, () => console.log(`Server listening on port ${options.port}`));
+  for (const repo of config.repositories) {
+    console.log(repo);
+    const sen = () => Promise.resolve().then(async () => {
+      if (repo.from === "github_release") {
+        const tags = repo.tags ?? ["latest"];
+        if (tags.length === 0) tags.push("latest");
+        return Promise.all(tags.map(async tag => github_release({
+          githubToken: repo.token,
+          config: {
+            owner: repo.owner,
+            repo: repo.repository,
+            releaseTag: tag,
+          }
+        }, ({control, getStream}) => registry.pushPackage(control, getStream))));
+      } else if (repo.from === "oci") {
+        return oci_registry({
+          image: repo.image,
+          targetInfo: repo.platfom_target,
+        }, ({control, getStream}) => registry.pushPackage(control, getStream));
+      }
+      return null;
+    }).catch(console.trace);
+    sen();
+    const cronJobs = repo.cronRefresh ?? [];
+    const jobs = cronJobs.map(cron => new CronJob(cron, sen));
+    jobs.forEach(job => job.start());
+  }
 });

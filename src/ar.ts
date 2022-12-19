@@ -46,7 +46,7 @@ export function createExtract(fn: (info: fileInfo, stream: Readable) => void) {
       }
     }
     size -= chunk.length;
-    entryStream.push(chunk, "binary");
+    if (entryStream) entryStream.push(chunk, "binary");
     return callback();
   }
   let waitMore: Buffer;
@@ -64,7 +64,7 @@ export function createExtract(fn: (info: fileInfo, stream: Readable) => void) {
         callback();
       }
       if (!chunk.subarray(0, 8).toString().trim().startsWith("!<arch>")) {
-        this.destroy();
+        __writed.destroy();
         return callback(new Error("Not an ar file"));
       }
       __locked = true;

@@ -1,13 +1,22 @@
-version: 1
-repos: []
-  # - repo: ghcr.io/sirherobrine23/nodeaptexample:sha256:c7b3eb9435f67aa08a2e98fdaa5c4548bb8e410fc804ed352bb03dcb212dde96
-  #   from: oci
+# Global apt config
+apt-config:
+  origin: ""
+  enableHash: true # if it is enabled, it may freeze the request a little because I have to wait for the hashes of the "Packages" files
+  sourcesHost: http://localhost:3000
+  # If you want to use a custom sources.list
+  sourcesList: deb [trusted=yes] %s://%s %s main
 
-  # - repo: Sirherobrine23/ghcrAptRepository
-  #   from: release
+repositories:
+# Example to docker and OCI image
+# - from: oci
+#   image: ghcr.io/sirherobrine23/nodeaptexample
+#   # Release endpoint config
+#   apt-config:
+#     origin: github.com/cli/cli
+#     lebel: github-cli
 
-  # - repo: The-Bds-Maneger/BedrockFetch
-  #   from: release
-
-  # - repo: cli/cli
-  #   from: release
+# Example to github release
+- from: github_release
+  repository: cli
+  owner: cli
+  takeUpTo: 2

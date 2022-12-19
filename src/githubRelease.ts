@@ -18,14 +18,14 @@ export async function fullConfig(config: {config: string|baseOptions<{releaseTag
     };
   }).filter(({assets}) => assets?.length > 0);
 
-  for (const rel of releases) {
-    for (const asset of rel.assets) {
-      const getStream = async () => coreUtils.httpRequest.pipeFetch(asset.download)
-      const control = await extractDebControl(await getStream());
-      fn({
-        ...control,
-        getStream,
-      });
-    }
-  }
+  return Promise.all(releases.map(async (rel) => Promise.all(rel.assets.map(async (asset) => {
+    console.log(`Downloading ${asset.name} from ${rel.tag}`);
+    const getStream = async () => coreUtils.httpRequest.pipeFetch(asset.download)
+    const control = await getStream().then(Stream => extractDebControl(Stream, new Promise(done => Stream.once("end", done))));
+    fn({
+      ...control,
+      getStream,
+    });
+    return {asset, getStream, control};
+  })))).then(data => data.flat());
 }

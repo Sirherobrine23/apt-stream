@@ -19,7 +19,7 @@ export function packageManeger(RootOptions?: backendConfig) {
   const localRegister: registerOobject = {};
   function pushPackage(control: packageControl, getStream: () => Promise<Readable>, from?: string) {
     if (!localRegister[control.Package]) localRegister[control.Package] = [];
-    console.log("Register %s/%s-5s", control.Package, control.Version, control.Architecture);
+    // console.log("Register %s/%s-5s", control.Package, control.Version, control.Architecture);
     localRegister[control.Package].push({
       getStream,
       control,
@@ -124,9 +124,9 @@ export function packageManeger(RootOptions?: backendConfig) {
 
   async function createRelease(options?: {packageName?: string, Arch?: string, includesHashs?: boolean, component?: string[], archive?: string}) {
     const textLines = [];
-    if (RootOptions?.aptConfig?.origin) textLines.push(`Origin: ${RootOptions.aptConfig.origin}`);
+    if (RootOptions?.["apt-config"]?.origin) textLines.push(`Origin: ${RootOptions["apt-config"].origin}`);
     if (options?.archive) textLines.push(`Archive: ${options?.archive}`);
-    else textLines.push(`Lebel: ${RootOptions?.aptConfig?.label||"node-apt"}`, `Date: ${new Date().toUTCString()}`);
+    else textLines.push(`Lebel: ${RootOptions?.["apt-config"]?.label||"node-apt"}`, `Date: ${new Date().toUTCString()}`);
     const components = options?.component ?? ["main"];
     const archs: string[] = [];
 
@@ -190,7 +190,7 @@ export default async function repo(aptConfig?: backendConfig) {
   const app = express();
   const registry = packageManeger();
   app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({extended: true})).use((_req, res, next) => {
-    res.json = (data) => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data, null, 2));
+    res.json = (data) => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data ?? null, null, 2));
     next();
   }).use((req, _res, next) => {
     next();
@@ -223,7 +223,7 @@ export default async function repo(aptConfig?: backendConfig) {
     if (!Targets) Targets = ["all"];
     res.setHeader("Content-type", "text/plain");
     let config = "";
-    for (const target of Targets) config += format(aptConfig?.aptConfig?.sourcesList ?? "deb [trusted=yes] %s://%s %s main\n", req.protocol, host, target);
+    for (const target of Targets) config += format(aptConfig?.["apt-config"]?.sourcesList ?? "deb [trusted=yes] %s://%s %s main\n", req.protocol, host, target);
     res.send(config+"\n");
   });
 
@@ -244,7 +244,7 @@ export default async function repo(aptConfig?: backendConfig) {
     const { suite, arch } = req.params;
     res.setHeader("Content-Type", "text/plain");
     return registry.createRelease({
-      includesHashs: aptConfig?.aptConfig?.enableHash ?? true,
+      includesHashs: aptConfig?.["apt-config"]?.enableHash ?? true,
       Arch: arch,
       packageName: suite === "all" ? undefined : suite,
       component: [req.params.component],
