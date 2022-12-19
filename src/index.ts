@@ -12,7 +12,7 @@ yargs(process.argv.slice(2)).wrap(null).strict().help().option("cofig-path", {
   type: "number",
   default: 3000,
 }).parseAsync().then(async options => {
-  const { app, registry } = await repo({});
+  const { app, registry } = await repo();
   app.listen(options.port, () => {
     console.log(`Server listening on port ${options.port}`);
   });

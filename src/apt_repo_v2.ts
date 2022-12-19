@@ -3,6 +3,7 @@ import { extendsCrypto } from "@sirherobrine23/coreutils";
 import { PassThrough, Readable } from "node:stream";
 import { format } from "node:util";
 import { Compressor as lzmaCompress } from "lzma-native";
+import { backendConfig } from "./repoConfig.js";
 import express from "express";
 import zlib from "node:zlib";
 
@@ -14,7 +15,7 @@ type registerOobject = {
   }[]
 };
 
-export function packageManeger(RootOptions?: {origin?: string, lebel?: string}) {
+export function packageManeger(RootOptions?: backendConfig) {
   const localRegister: registerOobject = {};
   function pushPackage(control: packageControl, getStream: () => Promise<Readable>, from?: string) {
     if (!localRegister[control.Package]) localRegister[control.Package] = [];
@@ -121,13 +122,12 @@ export function packageManeger(RootOptions?: {origin?: string, lebel?: string}) 
     });
   }
 
-  async function createRelease(options?: {packageName?: string, Arch?: string, includesHashs?: boolean}) {
-    const textLines = [
-      `Lebel: ${RootOptions?.lebel||"node-apt"}`,
-      `Date: ${new Date().toUTCString()}`
-    ];
-
-    const components = ["main"];
+  async function createRelease(options?: {packageName?: string, Arch?: string, includesHashs?: boolean, component?: string[], archive?: string}) {
+    const textLines = [];
+    if (RootOptions?.aptConfig?.origin) textLines.push(`Origin: ${RootOptions.aptConfig.origin}`);
+    if (options?.archive) textLines.push(`Archive: ${options?.archive}`);
+    else textLines.push(`Lebel: ${RootOptions?.aptConfig?.label||"node-apt"}`, `Date: ${new Date().toUTCString()}`);
+    const components = options?.component ?? ["main"];
     const archs: string[] = [];
 
     if (options?.packageName) {
@@ -141,20 +141,36 @@ export function packageManeger(RootOptions?: {origin?: string, lebel?: string}) 
       textLines.push("Suite: all");
     }
 
-    textLines.push(`Components: ${components.join(" ")}`, `Architectures: ${archs.join(" ")}`);
-    if (options?.includesHashs) {
-      const DataHashs = await Promise.all(archs.map(async (arch) => ({arch, hash: await packageHASH({Arch: arch})})));
+    textLines.push(`Components: ${options?.archive ? components[0] : components.join(" ")}`, `Architectures: ${archs.join(" ")}`);
+    if (options?.includesHashs && !options?.archive) {
+      const arrayComponents = [];
+      for (const component of components) {
+        for (const arch of archs) {
+          arrayComponents.push({
+            component,
+            arch,
+          });
+        }
+      }
+      const DataHashs = await Promise.all(arrayComponents.map(async (data) => {
+        return {
+          ...data,
+          hash: await packageHASH({
+            packageName: options?.packageName,
+          })
+        };
+      }));
       textLines.push(`MD5Sum:`);
       DataHashs.forEach(data => {
-        textLines.push(`  ${data.hash.raw.md5}  ${data.hash.raw.size}  ${data.arch}/binary-${data.arch}/Packages`);
-        textLines.push(`  ${data.hash.gz.md5}  ${data.hash.gz.size}  ${data.arch}/binary-${data.arch}/Packages.gz`);
-        textLines.push(`  ${data.hash.xz.md5}  ${data.hash.xz.size}  ${data.arch}/binary-${data.arch}/Packages.xz`);
+        textLines.push(`  ${data.hash.raw.md5}  ${data.hash.raw.size}  ${data.component}/binary-${data.arch}/Packages`);
+        textLines.push(`  ${data.hash.gz.md5}  ${data.hash.gz.size}  ${data.component}/binary-${data.arch}/Packages.gz`);
+        textLines.push(`  ${data.hash.xz.md5}  ${data.hash.xz.size}  ${data.component}/binary-${data.arch}/Packages.xz`);
       });
       textLines.push(`SHA256:`);
       DataHashs.forEach(data => {
-        textLines.push(`  ${data.hash.raw.sha256}  ${data.hash.raw.size}  ${data.arch}/binary-${data.arch}/Packages`);
-        textLines.push(`  ${data.hash.gz.sha256}  ${data.hash.gz.size}  ${data.arch}/binary-${data.arch}/Packages.gz`);
-        textLines.push(`  ${data.hash.xz.sha256}  ${data.hash.xz.size}  ${data.arch}/binary-${data.arch}/Packages.xz`);
+        textLines.push(`  ${data.hash.raw.sha256}  ${data.hash.raw.size}  ${data.component}/binary-${data.arch}/Packages`);
+        textLines.push(`  ${data.hash.gz.sha256}  ${data.hash.gz.size}  ${data.component}/binary-${data.arch}/Packages.gz`);
+        textLines.push(`  ${data.hash.xz.sha256}  ${data.hash.xz.size}  ${data.component}/binary-${data.arch}/Packages.xz`);
       });
     }
     textLines.push("");
@@ -170,7 +186,7 @@ export function packageManeger(RootOptions?: {origin?: string, lebel?: string}) 
   };
 }
 
-export default async function repo(aptConfig: {}) {
+export default async function repo(aptConfig?: backendConfig) {
   const app = express();
   const registry = packageManeger();
   app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({extended: true})).use((_req, res, next) => {
@@ -182,16 +198,32 @@ export default async function repo(aptConfig: {}) {
   });
 
   app.get("/", (_req, res) => res.json(registry.getPackages()));
+  app.get("/pool/:package/:arch/:version.deb", async (req, res) => {
+    const { package: packageName, arch, version } = req.params;
+    const packageData = registry.getPackages()[packageName];
+    if (!packageData) return res.status(404).json({error: "Package not found"});
+    const packageArch = packageData.filter((p) => p.control.Architecture === arch);
+    if (packageArch.length === 0) return res.status(404).json({error: "Package not found with the arch"});
+    const versionData = packageArch.find((p) => p.control.Version === version);
+    if (!versionData) return res.status(404).json({error: "Package not found with the version"});
+    if (!req.path.endsWith(".deb")) return res.json(versionData);
+    const stream = await versionData.getStream();
+    return stream.pipe(res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": versionData.control.Size,
+    }));
+  });
 
   app.get("/sources.list", (req, res) => {
+    const host = (req.socket.localPort && req.hostname) ? req.hostname+":"+req.socket.localPort : req.query.host||req.headers["x-forwarded-host"]||req.headers.host;
+    let Targets = ((req.query.t||req.query.targets) ?? ["all"]) as string[]|string;
+    if (typeof Targets === "string") Targets = Targets.split(",");
+    if (Targets?.length === 0) Targets = ["all"];
+    if (Targets?.includes("all")||Targets.some(a => a.toLowerCase().trim() === "all")) Targets = ["all"];
+    if (!Targets) Targets = ["all"];
     res.setHeader("Content-type", "text/plain");
     let config = "";
-    if (req.query.all) config += format("deb [trusted=yes] %s://%s %s main\n", req.protocol, req.headers.host, "all");
-    else {
-      for (const suite of Object.keys(registry.getPackages())) {
-        config += format("deb [trusted=yes] %s://%s %s main\n", req.protocol, req.headers.host, suite);
-      }
-    }
+    for (const target of Targets) config += format(aptConfig?.aptConfig?.sourcesList ?? "deb [trusted=yes] %s://%s %s main\n", req.protocol, host, target);
     res.send(config+"\n");
   });
 
@@ -201,10 +233,24 @@ export default async function repo(aptConfig: {}) {
   app.get("/dists/:suite/Release", (req, res, next) => {
     const { suite } = req.params;
     res.setHeader("Content-Type", "text/plain");
-    return registry.createRelease({packageName: suite === "all"?undefined:suite, includesHashs: true}).then((release) => res.send(release)).catch(next);
+    return registry.createRelease({
+      includesHashs: true,
+      packageName: suite === "all"?undefined:suite,
+    }).then((release) => res.send(release)).catch(next);
   });
 
   // Components
+  app.get("/dists/:suite/:component/binary-:arch/Release", (req, res, next) => {
+    const { suite, arch } = req.params;
+    res.setHeader("Content-Type", "text/plain");
+    return registry.createRelease({
+      includesHashs: aptConfig?.aptConfig?.enableHash ?? true,
+      Arch: arch,
+      packageName: suite === "all" ? undefined : suite,
+      component: [req.params.component],
+      archive: req.params.component,
+    }).then((release) => res.send(release)).catch(next);
+  });
   app.get("/dists/:suite/:component/binary-:arch/Packages(.(gz|xz)|)", (req, res, next) => {
     const {suite, arch} = req.params;
     const streams = registry.createPackages({packageName: suite, Arch: arch});

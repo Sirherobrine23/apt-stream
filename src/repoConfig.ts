@@ -22,6 +22,19 @@ export type configV1 = {
   })[]
 };
 
+export type backendConfig = {
+  aptConfig?: {
+    origin?: string,
+    label?: string,
+    enableHash?: boolean,
+    sourcesList?: string
+  },
+  repositorys: {
+    target: "oci_registry"|"github_release",
+    repo: string,
+  }[]
+};
+
 export async function getConfig(filePath: string): Promise<configV1> {
   if (!await coreUtils.extendFs.exists(filePath)) throw new Error("file not exists");
   const configData: configV1 = yaml.parse(await fs.readFile(filePath, "utf8"));

@@ -1,7 +1,7 @@
 version: 1
-repos:
-  - repo: ghcr.io/sirherobrine23/nodeaptexample:sha256:c7b3eb9435f67aa08a2e98fdaa5c4548bb8e410fc804ed352bb03dcb212dde96
-    from: oci
+repos: []
+  # - repo: ghcr.io/sirherobrine23/nodeaptexample:sha256:c7b3eb9435f67aa08a2e98fdaa5c4548bb8e410fc804ed352bb03dcb212dde96
+  #   from: oci
 
   # - repo: Sirherobrine23/ghcrAptRepository
   #   from: release
