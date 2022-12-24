@@ -25,6 +25,7 @@ type packageRegistry = {
 };
 
 export default async function main(configPath: string) {
+  const packInfos: packageRegistry = {};
   let repositoryConfig = await getConfig(configPath);
   // watch config file changes
   watchFile(configPath, async () => repositoryConfig = await getConfig(configPath));
@@ -58,20 +59,26 @@ export default async function main(configPath: string) {
     return res.setHeader("Content-Type", "text/plain").send(source);
   });
 
-  // Packages info
-  const packInfos: packageRegistry = {};
-  app.get("/", (_req, res) => res.json(packInfos));
+  app.get(["/", "/pool"], (_req, res) => {
+    const packages = Object.keys(packInfos);
+    const packagesVersions = packages.map((packageName) => {
+      const arch = Object.keys(packInfos[packageName].arch);
+      const versions = [...(new Set((arch.map((arch) => Object.keys(packInfos[packageName].arch[arch]))).flat()))];
+      return {packageName, arch, versions};
+    });
+    return res.json(packagesVersions);
+  });
 
   // Download
   app.get("/pool/:packageName/:arch/:version/download.deb", async (req, res) => {
     const packageobject = packInfos[req.params.packageName];
-    if (!packageobject) throw new Error("Package not found");
+    if (!packageobject) return res.status(400).json({error: "Package not found"});
     const arch = packageobject.arch[req.params.arch];
-    if (!arch) throw new Error("Arch not found");
+    if (!arch) return res.status(400).json({error: "Arch not found"});
     const version = arch[req.params.version];
-    if (!version) throw new Error("Version not found");
+    if (!version) return res.status(400).json({error: "Version not found"});
     const {getStream} = version;
-    if (!getStream) throw new Error("Stream not found");
+    if (!getStream) return res.status(400).json({error: "Stream not found"});
     return getStream().then(stream => stream.pipe(res.writeHead(200, {
       "Content-Type": "application/vnd.debian.binary-package",
       "Content-Length": version.control.Size,
@@ -80,9 +87,27 @@ export default async function main(configPath: string) {
       "Content-SHA256": version.control.SHA256,
     })));
   });
-  app.get("/pool/:packageName/:arch/:version", async (req, res) => {});
-  app.get("/pool/:packageName/:arch", async (req, res) => {});
-  app.get("/pool/:packageName", async (req, res) => {});
+  app.get("/pool/:packageName/:arch/:version", async (req, res) => {
+    const packageobject = packInfos[req.params.packageName];
+    if (!packageobject) return res.status(400).json({error: "Package not found"});
+    const arch = packageobject.arch[req.params.arch];
+    if (!arch) return res.status(400).json({error: "Arch not found"});
+    const version = arch[req.params.version];
+    if (!version) return res.status(400).json({error: "Version not found"});
+    return res.json(version);
+  });
+  app.get("/pool/:packageName/:arch", async (req, res) => {
+    const packageobject = packInfos[req.params.packageName];
+    if (!packageobject) return res.status(400).json({error: "Package not found"});
+    const arch = packageobject.arch[req.params.arch];
+    if (!arch) return res.status(400).json({error: "Arch not found"});
+    return res.json(arch);
+  });
+  app.get("/pool/:packageName", async (req, res) => {
+    const packageobject = packInfos[req.params.packageName];
+    if (!packageobject) return res.status(400).json({error: "Package not found"});
+    return res.json(packageobject.arch);
+  });
 
   async function createPackages(compress?: "gzip" | "xz", options?: {writeStream?: Writable, package?: string, arch?: string, suite?: string}) {
     const rawWrite = new Readable({read(){}});
@@ -254,28 +279,30 @@ export default async function main(configPath: string) {
     return ReleaseLines.join("\n");
   }
   app.get("/dists/:dist/Release", (req, res, next) => createReleaseV1(req.params.dist).then((data) => res.setHeader("Content-Type", "text/plain").send(data)).catch(next));
-  app.get("/dists/:dist/InRelease", async (req, res) => {
+  app.get("/dists/:dist/InRelease", (req, res, next) => {
     const Key = repositoryConfig["apt-config"]?.pgpKey;
     if (!Key) return res.status(404).json({error: "No PGP key found"});
-    // const publicKey = await openpgp.readKey({ armoredKey: Key.public });
-    const privateKey = Key.passphrase ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: Key.private }), passphrase: Key.passphrase}) : await openpgp.readPrivateKey({ armoredKey: Key.private });
-    const Release = await createReleaseV1(req.params.dist);
-    return res.setHeader("Content-Type", "text/plain").send(await openpgp.sign({
-      signingKeys: privateKey,
-      format: "armored",
-      message: await openpgp.createCleartextMessage({text: Release}),
-    }));
+    return Promise.resolve().then(async () => {
+      const privateKey = Key.passphrase ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: Key.private }), passphrase: Key.passphrase}) : await openpgp.readPrivateKey({ armoredKey: Key.private });
+      const Release = await createReleaseV1(req.params.dist);
+      return res.setHeader("Content-Type", "text/plain").send(await openpgp.sign({
+        signingKeys: privateKey,
+        format: "armored",
+        message: await openpgp.createCleartextMessage({text: Release}),
+      }));
+    }).catch(next);
   });
-  app.get("/dists/:dist/Release.gpg", async (req, res) => {
+  app.get("/dists/:dist/Release.gpg", (req, res, next) => {
     const Key = repositoryConfig["apt-config"]?.pgpKey;
     if (!Key) return res.status(404).json({error: "No PGP key found"});
-    // const publicKey = await openpgp.readKey({ armoredKey: Key.public });
-    const privateKey = Key.passphrase ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: Key.private }), passphrase: Key.passphrase}) : await openpgp.readPrivateKey({ armoredKey: Key.private });
-    const Release = await createReleaseV1(req.params.dist);
-    return res.setHeader("Content-Type", "text/plain").send(await openpgp.sign({
-      signingKeys: privateKey,
-      message: await openpgp.createMessage({text: Release}),
-    }));
+    return Promise.resolve().then(async () => {
+      const privateKey = Key.passphrase ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: Key.private }), passphrase: Key.passphrase}) : await openpgp.readPrivateKey({ armoredKey: Key.private });
+      const Release = await createReleaseV1(req.params.dist);
+      return res.setHeader("Content-Type", "text/plain").send(await openpgp.sign({
+        signingKeys: privateKey,
+        message: await openpgp.createMessage({text: Release}),
+      }));
+    }).catch(next);
   });
 
   // Error handler
