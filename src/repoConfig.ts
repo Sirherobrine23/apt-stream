@@ -2,45 +2,88 @@ import coreUtils, { DockerRegistry } from "@sirherobrine23/coreutils";
 import * as yaml from "yaml";
 import fs from "node:fs/promises";
 
-export type configV1 = {
-  version: 1,
-  repos: (({
-    from: "release",
-    repo: string|{
-      owner: string,
-      repo: string
-    },
-  }|{
-    from: "oci",
-    repo: string,
-    ociConfig?: DockerRegistry.Manifest.platfomTarget,
-  }) & {
-    auth?: {
-      username?: string,
-      password?: string
-    }
-  })[]
+export type apt_config = {
+  origin?: string,
+  label?: string,
+  codename?: string,
+  suite?: string[],
+  enableHash?: boolean,
+  sourcesHost?: string
 };
 
-export async function getConfig(filePath: string): Promise<configV1> {
-  if (!await coreUtils.extendFs.exists(filePath)) throw new Error("file not exists");
-  const configData: configV1 = yaml.parse(await fs.readFile(filePath, "utf8"));
-  return {
-    version: 1,
-    repos: (configData?.repos ?? []).map(data => {
-      if (data.from === "oci" && typeof data.repo === "string") {
-        return {
-          repo: data.repo,
-          from: "oci",
-          auth: data.auth,
-          ociConfig: data.ociConfig
-        };
+export type repository = ({
+  from: "oci",
+  image: string,
+  platfom_target?: DockerRegistry.Manifest.platfomTarget
+  auth?: {
+    username?: string,
+    password?: string
+  },
+  "apt-config"?: apt_config,
+}|{
+  from: "github_release",
+  repository: string,
+  owner?: string,
+  tags?: string[],
+  takeUpTo?: number,
+  token?: string,
+  "apt-config"?: apt_config,
+}) & {
+  /** cron range: https://github.com/kelektiv/node-cron#cron-ranges */
+  cronRefresh?: string[],
+}
+
+export type backendConfig = Partial<{
+  "apt-config"?: apt_config & {
+    portListen?: number,
+    pgpKey?: {
+      private: string,
+      public: string,
+      passphrase?: string
+    }
+  },
+  all?: apt_config,
+  repositories: repository[]
+}>;
+
+export async function saveConfig(filePath: string, config: backendConfig) {
+  await fs.writeFile(filePath, yaml.stringify(config));
+}
+
+export async function getConfig(filePath: string) {
+  if (!await coreUtils.extendFs.exists(filePath)) throw new Error("config File not exists");
+  const fixedConfig: backendConfig = {};
+  const configData: backendConfig = yaml.parse(await fs.readFile(filePath, "utf8"));
+  fixedConfig["apt-config"] = configData["apt-config"] ?? {enableHash: true, label: "apt-stream"};
+  fixedConfig.repositories = configData.repositories ?? [];
+  fixedConfig.repositories = (fixedConfig.repositories ?? []).map((repo) => {
+    if (repo.from === "oci") {
+      if (!repo.image) throw new Error("oci repository must have image field");
+      const repoFix: repository = {from: "oci", image: repo.image};
+      if (repo.platfom_target) repoFix.platfom_target = repo.platfom_target;
+      if (repo.auth) repoFix.auth = repo.auth;
+      if (repo["apt-config"]) repoFix["apt-config"] = repo["apt-config"];
+      if (repo.cronRefresh) repoFix.cronRefresh = repo.cronRefresh;
+      return repoFix;
+    } else if (repo.from === "github_release") {
+      if (!repo.repository) throw new Error("github_release repository must have repository field");
+      else if (typeof repo.repository !== "string") throw new Error("github_release repository must be string");
+      const repoFix: repository = {from: "github_release", repository: repo.repository};
+      if (repo.owner) repoFix.owner = repo.owner;
+      else {
+        const [owner, ...repository] = repo.repository.split("/");
+        if (!owner) throw new Error("github_release repository must have owner field");
+        if (repository.length === 0) throw new Error("github_release repository must have repository field");
+        repoFix.owner = owner;
+        repoFix.repository = repository.join("/");
       }
-      return {
-        repo: (typeof data.repo === "string")?data.repo:{owner: data.repo.owner, repo: data.repo.repo},
-        from: "release",
-        auth: data.auth,
-      }
-    })
-  };
+      if (repo.token) repoFix.token = repo.token;
+      if (repo["apt-config"]) repoFix["apt-config"] = repo["apt-config"];
+      if (repo.cronRefresh) repoFix.cronRefresh = repo.cronRefresh;
+      return repoFix;
+    }
+
+    return null;
+  }).filter(a => !!a);
+  return fixedConfig;
 }
