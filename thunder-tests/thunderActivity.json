@@ -88,11 +88,11 @@
     "colId": "history",
     "containerId": "",
     "name": "localhost:3000/dists/gh/Release",
-    "url": "localhost:3000/",
+    "url": "localhost:3000/dists/gh/Release",
     "method": "GET",
     "sortNum": 0,
     "created": "2022-12-16T12:04:29.843Z",
-    "modified": "2022-12-16T15:33:07.174Z",
+    "modified": "2022-12-23T21:44:46.078Z",
     "headers": [],
     "params": [],
     "tests": []

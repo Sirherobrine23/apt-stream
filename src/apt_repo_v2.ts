@@ -1,285 +1,318 @@
-import { packageControl } from "./deb.js";
-import { extendsCrypto } from "@sirherobrine23/coreutils";
-import { PassThrough, Readable } from "node:stream";
-import { format } from "node:util";
-import { Compressor as lzmaCompress } from "lzma-native";
-import { backendConfig } from "./repoConfig.js";
+import { DebianPackage, httpRequestGithub, extendsCrypto, httpRequest } from "@sirherobrine23/coreutils";
+import { Compressor as lzmaCompressor } from "lzma-native";
+import { getConfig, repository } from "./repoConfig.js";
+import { Readable, Writable } from "node:stream";
+import { createGzip } from "node:zlib";
+import { CronJob } from "cron";
+import { watchFile } from "node:fs";
 import express from "express";
-import zlib from "node:zlib";
+import openpgp from "openpgp";
+import { format } from "node:util";
 
-type registerOobject = {
+type packageRegistry = {
   [packageName: string]: {
-    getStream: () => Promise<Readable>,
-    control: packageControl,
-    from?: string,
-  }[]
+    repositoryConfig: repository,
+    arch: {
+      [arch: string]: {
+        [version: string]: {
+          getStream: () => Promise<Readable>,
+          control: DebianPackage.debianControl,
+          suite?: string,
+        }
+      }
+    }
+  }
 };
 
-export function packageManeger(RootOptions?: backendConfig) {
-  const localRegister: registerOobject = {};
-  function pushPackage(control: packageControl, getStream: () => Promise<Readable>, from?: string) {
-    if (!localRegister[control.Package]) localRegister[control.Package] = [];
-    // console.log("Register %s/%s-5s", control.Package, control.Version, control.Architecture);
-    localRegister[control.Package].push({
-      getStream,
-      control,
-      from,
-    });
-  }
+export default async function main(configPath: string) {
+  let repositoryConfig = await getConfig(configPath);
+  // watch config file changes
+  watchFile(configPath, async () => repositoryConfig = await getConfig(configPath));
+  const app = express();
+  app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({ extended: true })).use((req, _res, next) => {
+    next();
+    return console.log("%s %s %s", req.method, req.ip, req.path);
+  });
 
-  function getPackages() {
-    return localRegister;
-  }
+  // Public key
+  app.get("/public_key", async ({res}) => {
+    const Key = repositoryConfig["apt-config"]?.pgpKey;
+    if (!Key) return res.status(400).json({error: "This repository no sign Packages files"});
+    const pubKey = (await openpgp.readKey({ armoredKey: Key.public })).armor();
+    return res.setHeader("Content-Type", "application/pgp-keys").send(pubKey);
+  });
 
-  function createPackages(options?: {packageName?: string, Arch?: string}) {
-    if (options?.packageName === "all") options.packageName = undefined;
-    const raw = new PassThrough();
-    const gz = raw.pipe(zlib.createGzip());
-    const xz = raw.pipe(lzmaCompress());
+  // Sources list
+  app.get("/source_list", (req, res) => {
+    let source = "";
+    const host = repositoryConfig["apt-config"]?.sourcesHost ?? `${req.protocol}://${req.hostname}:${req.socket.localPort}`;
+    for (const repo in packInfos) {
+      if (source) source += "\n";
+      const suites = packInfos[repo].repositoryConfig?.["apt-config"]?.suite ?? ["main"];
+      if (suites.length === 0) suites.push("main");
+      let extraConfig = "";
+      if (!repositoryConfig["apt-config"]?.pgpKey) extraConfig += " [trusted=yes]";
+      source += format("deb%s %s %s", extraConfig ? " "+extraConfig:"", host, repo, suites.join(""));
+    }
+    source += "\n";
+    return res.setHeader("Content-Type", "text/plain").send(source);
+  });
 
-    const writeObject = async (packageData: (typeof localRegister)[string][number]) => {
-      const control = packageData.control;
-      control.Filename = format("pool/%s/%s/%s.deb", control.Package, control.Architecture, control.Version);
-      const desc = control.Description;
-      delete control.Description;
-      control.Description = (desc?.split("\n") ?? [])[0];
-      if (!control.Description) control.Description = "No description";
-      let line = "";
-      Object.keys(control).forEach(key => line += (`${key}: ${control[key]}\n`));
-      raw.push(Buffer.from(line+"\n", "utf8"));
+  // Packages info
+  const packInfos: packageRegistry = {};
+  app.get("/", (_req, res) => res.json(packInfos));
+
+  // Download
+  app.get("/pool/:packageName/:arch/:version/download.deb", async (req, res) => {
+    const packageobject = packInfos[req.params.packageName];
+    if (!packageobject) throw new Error("Package not found");
+    const arch = packageobject.arch[req.params.arch];
+    if (!arch) throw new Error("Arch not found");
+    const version = arch[req.params.version];
+    if (!version) throw new Error("Version not found");
+    const {getStream} = version;
+    if (!getStream) throw new Error("Stream not found");
+    return getStream().then(stream => stream.pipe(res.writeHead(200, {
+      "Content-Type": "application/vnd.debian.binary-package",
+      "Content-Length": version.control.Size,
+      "Content-MD5": version.control.MD5sum,
+      "Content-SHA1": version.control.SHA1,
+      "Content-SHA256": version.control.SHA256,
+    })));
+  });
+  app.get("/pool/:packageName/:arch/:version", async (req, res) => {});
+  app.get("/pool/:packageName/:arch", async (req, res) => {});
+  app.get("/pool/:packageName", async (req, res) => {});
+
+  async function createPackages(compress?: "gzip" | "xz", options?: {writeStream?: Writable, package?: string, arch?: string, suite?: string}) {
+    const rawWrite = new Readable({read(){}});
+    let size = 0;
+    let hash: ReturnType<typeof extendsCrypto.createHashAsync>|undefined;
+    if (compress === "gzip") {
+      const gzip = rawWrite.pipe(createGzip({level: 9}));
+      if (options?.writeStream) gzip.pipe(options.writeStream);
+      hash = extendsCrypto.createHashAsync("all", gzip);
+      gzip.on("data", (chunk) => size += chunk.length);
+    } else if (compress === "xz") {
+      const lzma = rawWrite.pipe(lzmaCompressor());
+      if (options?.writeStream) lzma.pipe(options.writeStream);
+      hash = extendsCrypto.createHashAsync("all", lzma);
+      lzma.on("data", (chunk) => size += chunk.length);
+    } else {
+      if (options?.writeStream) rawWrite.pipe(options.writeStream);
+      hash = extendsCrypto.createHashAsync("all", rawWrite);
+      rawWrite.on("data", (chunk) => size += chunk.length);
     }
 
-    async function getStart() {
-      if (!!options?.packageName) {
-        const packageVersions = localRegister[options?.packageName];
-        if (!packageVersions) {
-          raw.push(null);
-          raw.destroy();
-          throw new Error("Package not found");
+    let addbreak = false;
+    for (const packageName in packInfos) {
+      if (options?.package && packageName !== options.package) continue;
+      const packageobject = packInfos[packageName];
+      for (const arch in packageobject.arch) {
+        if (options?.arch && arch !== options.arch) continue;
+        for (const version in packageobject.arch[arch]) {
+          if (addbreak) rawWrite.push("\n\n");
+          addbreak = true;
+          const {control} = packageobject.arch[arch][version];
+          /*
+          Package: hello-world
+          Version: 0.0.1
+          Architecture: amd64
+          Maintainer: example <example@example.com>
+          Depends: libc6
+          Filename: pool/main/hello-world_0.0.1-1_amd64.deb
+          Size: 2832
+          MD5sum: 3eba602abba5d6ea2a924854d014f4a7
+          SHA1: e300cabc138ac16b64884c9c832da4f811ea40fb
+          SHA256: 6e314acd7e1e97e11865c11593362c65db9616345e1e34e309314528c5ef19a6
+          Homepage: http://example.com
+          Description: A program that prints hello
+          */
+          const Data = [
+            `Package: ${packageName}`,
+            `Version: ${version}`,
+            `Architecture: ${arch}`,
+            `Maintainer: ${control.Maintainer}`,
+            `Depends: ${control.Depends}`,
+            `Size: ${control.Size}`,
+            `MD5sum: ${control.MD5sum}`,
+            `SHA1: ${control.SHA1}`,
+            `SHA256: ${control.SHA256}`,
+          ];
+
+          Data.push(`Filename: pool/${packageName}/${arch}/${version}/download.deb`);
+          if (control.Homepage) Data.push(`Homepage: ${control.Homepage}`);
+          if (control.Description) Data.push(`Description: ${control.Description}`);
+
+          // Register
+          rawWrite.push(Data.join("\n"));
         }
-        for (const packageData of packageVersions) {
-          if (options?.Arch && packageData.control.Architecture !== options?.Arch) continue;
-          await writeObject(packageData);
-        }
-      } else {
-        for (const packageName in localRegister) {
-          for (const packageData of localRegister[packageName]) {
-            if (options?.Arch && packageData.control.Architecture !== options?.Arch) continue;
-            await writeObject(packageData);
+      }
+    }
+
+    rawWrite.push(null);
+    if (hash) return hash.then(hash => ({...hash, size}));
+    return null;
+  }
+
+  app.get("/dists/:dist/:suite/binary-:arch/Packages(.(xz|gz)|)", (req, res) => {
+    if (req.path.endsWith(".gz")) {
+      createPackages("gzip", {
+        package: req.params.dist,
+        arch: req.params.arch,
+        suite: req.params.suite,
+        writeStream: res.writeHead(200, {
+          "Content-Encoding": "gzip",
+          "Content-Type": "application/x-gzip"
+        }),
+      });
+    } else if (req.path.endsWith(".xz")) {
+      createPackages("xz", {
+        package: req.params.dist,
+        arch: req.params.arch,
+        suite: req.params.suite,
+        writeStream: res.writeHead(200, {
+          "Content-Encoding": "xz",
+          "Content-Type": "application/x-xz"
+        }),
+      });
+    } else {
+      createPackages(undefined, {
+        package: req.params.dist,
+        arch: req.params.arch,
+        suite: req.params.suite,
+        writeStream: res.writeHead(200, {
+          "Content-Type": "text/plain"
+        }),
+      });
+    }
+  });
+
+  // Release
+  async function createReleaseV1(dist: string) {
+    const packageobject = packInfos[dist];
+    if (!packageobject) throw new Error("Dist not found");
+    const ReleaseLines = [];
+
+    // Origin
+    const Origin = packageobject.repositoryConfig["apt-config"]?.origin || repositoryConfig["apt-config"]?.origin || "apt-stream";
+    ReleaseLines.push(`Origin: ${Origin}`);
+
+    // Lebel
+    const Label = packageobject.repositoryConfig["apt-config"]?.label || repositoryConfig["apt-config"]?.label || "apt-stream";
+    ReleaseLines.push(`Label: ${Label}`);
+
+    // Suite
+    const Suites = packageobject.repositoryConfig["apt-config"]?.suite || repositoryConfig["apt-config"]?.suite || ["main"];
+    if (Suites.length === 0) Suites.push("main");
+
+    // Codename if exists
+    const codename = packageobject.repositoryConfig["apt-config"]?.codename || repositoryConfig["apt-config"]?.codename;
+    if (codename) ReleaseLines.push(`Codename: ${codename}`);
+
+    // Date
+    ReleaseLines.push(`Date: ${new Date().toUTCString()}`);
+
+    // Architectures
+    const archs = Object.keys(packageobject.arch);
+    ReleaseLines.push(`Architectures: ${archs.join(" ")}`);
+
+    const createPackagesHash = packageobject.repositoryConfig["apt-config"]?.enableHash ?? repositoryConfig["apt-config"]?.enableHash ?? true;
+    if (createPackagesHash) {
+      const sha256: {file: string, size: number, hash: string}[] = [];
+      const sha1: {file: string, size: number, hash: string}[] = [];
+      const md5: {file: string, size: number, hash: string}[] = [];
+
+      for (const arch of archs) {
+        for (const Suite of Suites) {
+          const gzip = await createPackages("gzip", {package: dist, arch, suite: Suite});
+          if (gzip) {
+            sha256.push({file: `${Suite}/binary-${arch}/Packages.gz`, size: gzip.size, hash: gzip.sha256});
+            sha1.push({file: `${Suite}/binary-${arch}/Packages.gz`, size: gzip.size, hash: gzip.sha1});
+            md5.push({file: `${Suite}/binary-${arch}/Packages.gz`, size: gzip.size, hash: gzip.md5});
+          }
+          const xz = await createPackages("xz", {package: dist, arch, suite: Suite});
+          if (xz) {
+            sha256.push({file: `${Suite}/binary-${arch}/Packages.xz`, size: xz.size, hash: xz.sha256});
+            sha1.push({file: `${Suite}/binary-${arch}/Packages.xz`, size: xz.size, hash: xz.sha1});
+            md5.push({file: `${Suite}/binary-${arch}/Packages.xz`, size: xz.size, hash: xz.md5});
+          }
+          const raw = await createPackages(undefined, {package: dist, arch, suite: Suite});
+          if (raw) {
+            sha256.push({file: `${Suite}/binary-${arch}/Packages`, size: raw.size, hash: raw.sha256});
+            sha1.push({file: `${Suite}/binary-${arch}/Packages`, size: raw.size, hash: raw.sha1});
+            md5.push({file: `${Suite}/binary-${arch}/Packages`, size: raw.size, hash: raw.md5});
           }
         }
       }
-      raw.push(null);
-      raw.end();
-    }
-    return {
-      getStart,
-      raw,
-      gz,
-      xz,
-    };
-  }
 
-  async function packageHASH(options?: {packageName?: string, Arch?: string}) {
-    return new Promise<{raw: {md5: string, sha256: string, size: number}, gz: {md5: string, sha256: string, size: number}, xz: {md5: string, sha256: string, size: number}}>(async (resolve, reject) => {
-      const strems = createPackages(options);
-      const size = {
-        raw: 0,
-        gz: 0,
-        xz: 0,
-      };
-      const raw = extendsCrypto.createSHA256_MD5(strems.raw, "both");
-      const gz = extendsCrypto.createSHA256_MD5(strems.gz, "both", new Promise((resolve) => {
-        strems.gz.on("end", resolve);
-      }));
-      const xz = extendsCrypto.createSHA256_MD5(strems.xz, "both", new Promise((resolve) => {
-        strems.xz.on("end", resolve).on("error", reject);
-      }))
-      strems.raw.on("data", (data) => size.raw += data.length);
-      strems.gz.on("data", (data) => size.gz += data.length);
-      strems.xz.on("data", (data) => size.xz += data.length);
-      strems.getStart().catch(reject);
-      const rawHash = await raw;
-      const gzHash = await gz;
-      const xzHash = await xz;
-      resolve({
-        raw: {
-          md5: rawHash.md5,
-          sha256: rawHash.sha256,
-          size: size.raw,
-        },
-        gz: {
-          md5: gzHash.md5,
-          sha256: gzHash.sha256,
-          size: size.gz,
-        },
-        xz: {
-          md5: xzHash.md5,
-          sha256: xzHash.sha256,
-          size: size.xz,
-        },
-      });
-    });
-  }
-
-  async function createRelease(options?: {packageName?: string, Arch?: string, includesHashs?: boolean, component?: string[], archive?: string}) {
-    const textLines = [];
-    if (RootOptions?.["apt-config"]?.origin) textLines.push(`Origin: ${RootOptions["apt-config"].origin}`);
-    if (options?.archive) textLines.push(`Archive: ${options?.archive}`);
-    else textLines.push(`Lebel: ${RootOptions?.["apt-config"]?.label||"node-apt"}`, `Date: ${new Date().toUTCString()}`);
-    const components = options?.component ?? ["main"];
-    const archs: string[] = [];
-
-    if (options?.packageName) {
-      const packageData = localRegister[options?.packageName];
-      if (!packageData) throw new Error("Package not found");
-      textLines.push(`Suite: ${options?.packageName}`);
-      archs.push(...([...(new Set(localRegister[options?.packageName].map((p) => p.control.Architecture)))]).filter(arch => (options?.Arch === "all"||!options?.Arch) ? true : arch === options.Arch));
-    } else {
-      // For all packages
-      archs.push(...(([...(new Set(Object.values(localRegister).flat().map((p) => p.control.Architecture)))]).filter(arch => (options?.Arch === "all"||!options?.Arch) ? true : arch === options.Arch)));
-      textLines.push("Suite: all");
+      if (sha256.length > 0) ReleaseLines.push(`SHA256:${sha256.map((hash) => `\n  ${hash.hash} ${hash.size} ${hash.file}`).join("")}`);
+      if (sha1.length > 0) ReleaseLines.push(`SHA1:${sha1.map((hash) => `\n  ${hash.hash} ${hash.size} ${hash.file}`).join("")}`);
+      if (md5.length > 0) ReleaseLines.push(`MD5Sum:${md5.map((hash) => `\n  ${hash.hash} ${hash.size} ${hash.file}`).join("")}`);
     }
 
-    textLines.push(`Components: ${options?.archive ? components[0] : components.join(" ")}`, `Architectures: ${archs.join(" ")}`);
-    if (options?.includesHashs && !options?.archive) {
-      const arrayComponents = [];
-      for (const component of components) {
-        for (const arch of archs) {
-          arrayComponents.push({
-            component,
-            arch,
-          });
-        }
-      }
-      const DataHashs = await Promise.all(arrayComponents.map(async (data) => {
-        return {
-          ...data,
-          hash: await packageHASH({
-            packageName: options?.packageName,
-          })
-        };
-      }));
-      textLines.push(`MD5Sum:`);
-      DataHashs.forEach(data => {
-        textLines.push(`  ${data.hash.raw.md5}  ${data.hash.raw.size}  ${data.component}/binary-${data.arch}/Packages`);
-        textLines.push(`  ${data.hash.gz.md5}  ${data.hash.gz.size}  ${data.component}/binary-${data.arch}/Packages.gz`);
-        textLines.push(`  ${data.hash.xz.md5}  ${data.hash.xz.size}  ${data.component}/binary-${data.arch}/Packages.xz`);
-      });
-      textLines.push(`SHA256:`);
-      DataHashs.forEach(data => {
-        textLines.push(`  ${data.hash.raw.sha256}  ${data.hash.raw.size}  ${data.component}/binary-${data.arch}/Packages`);
-        textLines.push(`  ${data.hash.gz.sha256}  ${data.hash.gz.size}  ${data.component}/binary-${data.arch}/Packages.gz`);
-        textLines.push(`  ${data.hash.xz.sha256}  ${data.hash.xz.size}  ${data.component}/binary-${data.arch}/Packages.xz`);
-      });
-    }
-    textLines.push("");
-    // convert to string
-    return textLines.join("\n");
+    return ReleaseLines.join("\n");
   }
-
-  return {
-    getPackages,
-    pushPackage,
-    createRelease,
-    createPackages,
-  };
-}
-
-export default async function repo(aptConfig?: backendConfig) {
-  const app = express();
-  const registry = packageManeger();
-  app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({extended: true})).use((_req, res, next) => {
-    res.json = (data) => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data ?? null, null, 2));
-    next();
-  }).use((req, _res, next) => {
-    next();
-    return console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
+  app.get("/dists/:dist/Release", (req, res, next) => createReleaseV1(req.params.dist).then((data) => res.setHeader("Content-Type", "text/plain").send(data)).catch(next));
+  app.get("/dists/:dist/InRelease", async (req, res) => {
+    const Key = repositoryConfig["apt-config"]?.pgpKey;
+    if (!Key) return res.status(404).json({error: "No PGP key found"});
+    // const publicKey = await openpgp.readKey({ armoredKey: Key.public });
+    const privateKey = Key.passphrase ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: Key.private }), passphrase: Key.passphrase}) : await openpgp.readPrivateKey({ armoredKey: Key.private });
+    const Release = await createReleaseV1(req.params.dist);
+    return res.setHeader("Content-Type", "text/plain").send(await openpgp.sign({
+      signingKeys: privateKey,
+      format: "armored",
+      message: await openpgp.createCleartextMessage({text: Release}),
+    }));
   });
-
-  app.get("/", (_req, res) => res.json(registry.getPackages()));
-  app.get("/pool/:package/:arch/:version.deb", async (req, res) => {
-    const { package: packageName, arch, version } = req.params;
-    const packageData = registry.getPackages()[packageName];
-    if (!packageData) return res.status(404).json({error: "Package not found"});
-    const packageArch = packageData.filter((p) => p.control.Architecture === arch);
-    if (packageArch.length === 0) return res.status(404).json({error: "Package not found with the arch"});
-    const versionData = packageArch.find((p) => p.control.Version === version);
-    if (!versionData) return res.status(404).json({error: "Package not found with the version"});
-    if (!req.path.endsWith(".deb")) return res.json(versionData);
-    const stream = await versionData.getStream();
-    return stream.pipe(res.writeHead(200, {
-      "Content-Type": "application/octet-stream",
-      "Content-Length": versionData.control.Size,
+  app.get("/dists/:dist/Release.gpg", async (req, res) => {
+    const Key = repositoryConfig["apt-config"]?.pgpKey;
+    if (!Key) return res.status(404).json({error: "No PGP key found"});
+    // const publicKey = await openpgp.readKey({ armoredKey: Key.public });
+    const privateKey = Key.passphrase ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: Key.private }), passphrase: Key.passphrase}) : await openpgp.readPrivateKey({ armoredKey: Key.private });
+    const Release = await createReleaseV1(req.params.dist);
+    return res.setHeader("Content-Type", "text/plain").send(await openpgp.sign({
+      signingKeys: privateKey,
+      message: await openpgp.createMessage({text: Release}),
     }));
   });
 
-  app.get("/sources.list", (req, res) => {
-    const host = (req.socket.localPort && req.hostname) ? req.hostname+":"+req.socket.localPort : req.query.host||req.headers["x-forwarded-host"]||req.headers.host;
-    let Targets = ((req.query.t||req.query.targets) ?? ["all"]) as string[]|string;
-    if (typeof Targets === "string") Targets = Targets.split(",");
-    if (Targets?.length === 0) Targets = ["all"];
-    if (Targets?.includes("all")||Targets.some(a => a.toLowerCase().trim() === "all")) Targets = ["all"];
-    if (!Targets) Targets = ["all"];
-    res.setHeader("Content-type", "text/plain");
-    let config = "";
-    for (const target of Targets) config += format(aptConfig?.["apt-config"]?.sourcesList ?? "deb [trusted=yes] %s://%s %s main\n", req.protocol, host, target);
-    res.send(config+"\n");
-  });
-
-  // apt /dists
-  // release
-  app.get("/dists/:suite/InRelease", (_req, res) => res.status(400).json({error: "Not implemented, required pgp to auth"}));
-  app.get("/dists/:suite/Release", (req, res, next) => {
-    const { suite } = req.params;
-    res.setHeader("Content-Type", "text/plain");
-    return registry.createRelease({
-      includesHashs: true,
-      packageName: suite === "all"?undefined:suite,
-    }).then((release) => res.send(release)).catch(next);
-  });
-
-  // Components
-  app.get("/dists/:suite/:component/binary-:arch/Release", (req, res, next) => {
-    const { suite, arch } = req.params;
-    res.setHeader("Content-Type", "text/plain");
-    return registry.createRelease({
-      includesHashs: aptConfig?.["apt-config"]?.enableHash ?? true,
-      Arch: arch,
-      packageName: suite === "all" ? undefined : suite,
-      component: [req.params.component],
-      archive: req.params.component,
-    }).then((release) => res.send(release)).catch(next);
-  });
-  app.get("/dists/:suite/:component/binary-:arch/Packages(.(gz|xz)|)", (req, res, next) => {
-    const {suite, arch} = req.params;
-    const streams = registry.createPackages({packageName: suite, Arch: arch});
-    if (req.path.endsWith(".gz")) {
-      streams.gz.pipe(res.writeHead(200, {
-        "Content-Type": "application/x-gzip",
-      }));
-    } else if (req.path.endsWith(".xz")) {
-      streams.xz.pipe(res.writeHead(200, {
-        "Content-Type": "application/x-xz",
-      }));
-    } else {
-      streams.raw.pipe(res.writeHead(200, {
-        "Content-Type": "text/plain",
-      }));
-    }
-    return streams.getStart();
-  });
-
-  // No Page
+  // Error handler
   app.use((err, _req, res, _next) => {
-    console.log("Error: %s, req path: %s", err?.message||err, _req.path);
-    return res.status(500).json({
-      error: err?.message||err
-    });
+    res.status(500).json({error: err?.message||err});
   });
 
-  return {
-    app,
-    registry,
-  };
+  // Listen HTTP server
+  app.listen(repositoryConfig["apt-config"].portListen, function () {return console.log(`apt-repo listening at http://localhost:${this.address().port}`);});
+
+  // Loading and update packages
+  for (const repository of repositoryConfig.repositories) {
+    try {
+      if (repository.from === "github_release") {
+        const update = async () => {
+          const relData = repository.tags ? await Promise.all(repository.tags.map(async (tag) => httpRequestGithub.GithubRelease({repository: repository.repository, owner: repository.owner, token: repository.token, releaseTag: tag}))) : await httpRequestGithub.GithubRelease({repository: repository.repository, owner: repository.owner, token: repository.token});
+          const assets = relData.flat().map((rel) => rel.assets).flat().filter((asset) => asset.name.endsWith(".deb")).flat();
+
+          for (const asset of assets) {
+            const getStream = () => httpRequest.pipeFetch(asset.browser_download_url);
+            const control = await DebianPackage.extractControl(await getStream());
+            if (!packInfos[control.Package]) packInfos[control.Package] = {repositoryConfig: repository, arch: {}};
+            if (!packInfos[control.Package].arch[control.Architecture]) packInfos[control.Package].arch[control.Architecture] = {}
+            packInfos[control.Package].arch[control.Architecture][control.Version] = {control, getStream};
+          }
+        }
+        await update();
+        (repository.cronRefresh ?? []).map((cron) => {
+          const job = new CronJob(cron, update);
+          job.start();
+          return job;
+        });
+      } else if (repository.from === "oci") {
+
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
 }

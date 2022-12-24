@@ -5,8 +5,10 @@ import fs from "node:fs/promises";
 export type apt_config = {
   origin?: string,
   label?: string,
+  codename?: string,
+  suite?: string[],
   enableHash?: boolean,
-  sourcesList?: string
+  sourcesHost?: string
 };
 
 export type repository = ({
@@ -32,9 +34,21 @@ export type repository = ({
 }
 
 export type backendConfig = Partial<{
-  "apt-config"?: apt_config,
+  "apt-config"?: apt_config & {
+    portListen?: number,
+    pgpKey?: {
+      private: string,
+      public: string,
+      passphrase?: string
+    }
+  },
+  all?: apt_config,
   repositories: repository[]
 }>;
+
+export async function saveConfig(filePath: string, config: backendConfig) {
+  await fs.writeFile(filePath, yaml.stringify(config));
+}
 
 export async function getConfig(filePath: string) {
   if (!await coreUtils.extendFs.exists(filePath)) throw new Error("config File not exists");
