@@ -1,13 +1,14 @@
-import { DebianPackage, httpRequestGithub, extendsCrypto, httpRequest } from "@sirherobrine23/coreutils";
+import { DebianPackage, httpRequestGithub, extendsCrypto, httpRequest, DockerRegistry } from "@sirherobrine23/coreutils";
 import { Compressor as lzmaCompressor } from "lzma-native";
 import { getConfig, repository } from "./repoConfig.js";
 import { Readable, Writable } from "node:stream";
 import { createGzip } from "node:zlib";
 import { CronJob } from "cron";
 import { watchFile } from "node:fs";
+import { format } from "node:util";
 import express from "express";
 import openpgp from "openpgp";
-import { format } from "node:util";
+import tar from "tar";
 
 type packageRegistry = {
   [packageName: string]: {
@@ -139,20 +140,6 @@ export default async function main(configPath: string) {
           if (addbreak) rawWrite.push("\n\n");
           addbreak = true;
           const {control} = packageobject.arch[arch][version];
-          /*
-          Package: hello-world
-          Version: 0.0.1
-          Architecture: amd64
-          Maintainer: example <example@example.com>
-          Depends: libc6
-          Filename: pool/main/hello-world_0.0.1-1_amd64.deb
-          Size: 2832
-          MD5sum: 3eba602abba5d6ea2a924854d014f4a7
-          SHA1: e300cabc138ac16b64884c9c832da4f811ea40fb
-          SHA256: 6e314acd7e1e97e11865c11593362c65db9616345e1e34e309314528c5ef19a6
-          Homepage: http://example.com
-          Description: A program that prints hello
-          */
           const Data = [
             `Package: ${packageName}`,
             `Version: ${version}`,
@@ -317,26 +304,61 @@ export default async function main(configPath: string) {
   for (const repository of repositoryConfig.repositories) {
     try {
       if (repository.from === "github_release") {
-        const update = async () => {
+        const fetch_update_gh = async () => {
           const relData = repository.tags ? await Promise.all(repository.tags.map(async (tag) => httpRequestGithub.GithubRelease({repository: repository.repository, owner: repository.owner, token: repository.token, releaseTag: tag}))) : await httpRequestGithub.GithubRelease({repository: repository.repository, owner: repository.owner, token: repository.token});
           const assets = relData.flat().map((rel) => rel.assets).flat().filter((asset) => asset.name.endsWith(".deb")).flat();
-
           for (const asset of assets) {
             const getStream = () => httpRequest.pipeFetch(asset.browser_download_url);
             const control = await DebianPackage.extractControl(await getStream());
             if (!packInfos[control.Package]) packInfos[control.Package] = {repositoryConfig: repository, arch: {}};
-            if (!packInfos[control.Package].arch[control.Architecture]) packInfos[control.Package].arch[control.Architecture] = {}
+            if (!packInfos[control.Package].arch[control.Architecture]) packInfos[control.Package].arch[control.Architecture] = {};
+            console.log(`[INFO] ${control.Package} ${control.Version} ${control.Architecture} ${asset.browser_download_url}`);
             packInfos[control.Package].arch[control.Architecture][control.Version] = {control, getStream};
           }
         }
-        await update();
+        await fetch_update_gh();
         (repository.cronRefresh ?? []).map((cron) => {
-          const job = new CronJob(cron, update);
+          const job = new CronJob(cron, fetch_update_gh);
           job.start();
           return job;
         });
       } else if (repository.from === "oci") {
-
+        const fetch_update_oci = async () => {
+          const registry = await DockerRegistry.Manifest.Manifest(repository.image, repository.platfom_target);
+          await registry.layersStream((data) => {
+            if (!(["gzip", "gz", "tar"]).some(ends => data.layer.mediaType.endsWith(ends))) return data.next();
+            data.stream.pipe(tar.list({
+              async onentry(entry) {
+                if (!entry.path.endsWith(".deb")) return null;
+                const control = await DebianPackage.extractControl(entry as any);
+                if (!packInfos[control.Package]) packInfos[control.Package] = {repositoryConfig: repository, arch: {}};
+                if (!packInfos[control.Package].arch[control.Architecture]) packInfos[control.Package].arch[control.Architecture] = {}
+                console.log(`[INFO] ${control.Package} ${control.Version} ${control.Architecture} ${data.layer.digest}`);
+                packInfos[control.Package].arch[control.Architecture][control.Version] = {
+                  control,
+                  getStream: async () => {
+                    return new Promise<Readable>((done, reject) => registry.blobLayerStream(data.layer.digest).then(stream => {
+                      stream.on("error", reject);
+                      stream.pipe(tar.list({
+                        onentry(getEntry) {
+                          if (getEntry.path !== entry.path) return null;
+                          return done(getEntry as any);
+                        }
+                      // @ts-ignore
+                      }).on("error", reject));
+                    }).catch(reject));
+                  }
+                };
+              }
+            }));
+          });
+        }
+        await fetch_update_oci();
+        (repository.cronRefresh ?? []).map((cron) => {
+          const job = new CronJob(cron, fetch_update_oci);
+          job.start();
+          return job;
+        });
       }
     } catch (e) {
       console.error(e);

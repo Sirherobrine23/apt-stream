@@ -4,7 +4,7 @@ import repo from "./apt_repo_v2.js";
 import openpgp from "openpgp";
 import { getConfig, saveConfig } from "./repoConfig.js";
 
-yargs(process.argv.slice(2)).wrap(null).strict().help().strictCommands().option("cofig-path", {
+yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommands().alias("h", "help").option("cofig-path", {
   type: "string",
   default: process.cwd()+"/repoconfig.yml",
 }).command("config", "maneger basics configs", async yargs => {
