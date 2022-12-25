@@ -3,7 +3,6 @@ apt-config:
   origin: "Sirherobrine23"
   label: Sirherobrine23-repo
   enableHash: true
-  sourcesHost: http://localhost:3000
   pgpKey:
     private: |
       -----BEGIN PGP PRIVATE KEY BLOCK-----
@@ -175,6 +174,9 @@ apt-config:
       =Xjxj
       -----END PGP PUBLIC KEY BLOCK-----
 repositories:
-  - from: github_release
-    repository: cli
-    owner: cli
+  stable:
+    targets:
+    - from: github_release
+      repository: cli
+      owner: cli
+      suite: latest
