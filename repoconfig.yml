@@ -174,9 +174,32 @@ apt-config:
       =Xjxj
       -----END PGP PUBLIC KEY BLOCK-----
 repositories:
-  stable:
+  main:
     targets:
+    # Github CLI
     - from: github_release
       repository: cli
       owner: cli
-      suite: latest
+      assetsLimit: 3
+
+  github:
+    targets:
+    - from: github_release
+      repository: desktop
+      owner: shiftkey
+      assetsLimit: 3
+      cronRefresh:
+      - "0/30 0 * * *"
+
+  old:
+    targets:
+    # Github repository tree
+    - from: github_tree
+      repository: APT_bysh23
+      owner: Sirherobrine23
+      suite: main
+      tree: master
+      path:
+      - "/package/main"
+      - path: "/package/not-bysh23"
+        suite: not_by_sirherobrine

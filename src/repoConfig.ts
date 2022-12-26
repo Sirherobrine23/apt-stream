@@ -25,12 +25,13 @@ export type repository = ({
   repository: string,
   owner?: string,
   tags?: string[],
-  takeUpTo?: number,
+  assetsLimit?: number,
   token?: string,
 }|{
   from: "github_tree",
   repository: string,
   owner?: string,
+  tree?: string,
   path?: string|(string|{path: string, suite?: string})[],
   token?: string
 }) & {
@@ -69,7 +70,7 @@ export async function getConfig(filePath: string) {
   fixedConfig.repositories = {};
   if (!configData.repositories) configData.repositories = {};
   else if (Array.isArray(configData.repositories) && typeof configData.repositories === "object") configData.repositories = {};
-  
+
   Object.keys(configData.repositories).forEach(distribuition => {
     const distribuitionConfig = configData.repositories[distribuition];
     if (!distribuitionConfig) return;
@@ -97,7 +98,7 @@ export async function getConfig(filePath: string) {
         if (target.owner) githubData.owner = target.owner;
         if (target.token) githubData.token = target.token;
         if (target.tags) githubData.tags = target.tags;
-        if (target.takeUpTo) githubData.takeUpTo = target.takeUpTo;
+        if (target.assetsLimit) githubData.assetsLimit = target.assetsLimit;
         if (target.cronRefresh) githubData.cronRefresh = target.cronRefresh;
         fixedConfig.repositories[distribuition].targets.push({
           ...githubData,
@@ -107,8 +108,22 @@ export async function getConfig(filePath: string) {
         if (!target.repository) throw new Error("github_tree repository not defined");
         const githubData: repository = {from: "github_tree", repository: target.repository};
         if (target.owner) githubData.owner = target.owner;
+        githubData.tree = target.tree ?? "main";
+        if (target.path) {
+          githubData.path = target.path;
+          if (typeof target.path === "string") githubData.path = [{path: target.path.startsWith("/") ? target.path.slice(1) : target.path}];
+          else {
+            githubData.path = target.path.map(path => {
+              if (typeof path === "string") return {path};
+              return path;
+            });
+            githubData.path = githubData.path.map((path: {path: string}) => {
+              if (path.path.startsWith("/")) path.path = path.path.slice(1);
+              return path;
+            })
+          }
+        }
         if (target.token) githubData.token = target.token;
-        if (target.path) githubData.path = target.path;
         if (target.cronRefresh) githubData.cronRefresh = target.cronRefresh;
         fixedConfig.repositories[distribuition].targets.push({
           ...githubData,
