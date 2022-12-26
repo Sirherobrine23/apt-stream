@@ -11,49 +11,48 @@ You can host an apt rapida repository with the following storages:
 
 ## Config file
 
-Estou ainda mexendo com o arquivo de configuração dos repositorios, e do servidor por enquanto está com está até eu poder mexer direito nele.
+As a good part of the server will be configured by this file that includes, PGP key port, together with the repositories and their distributions.
+
+Example file:
 
 ```yaml
-# Global apt config
 apt-config:
-  origin: ""
-  enableHash: true # if it is enabled, it may freeze the request a little because I have to wait for the hashes of the "Packages" files
-  sourcesHost: http://localhost:3000
-  # If you want to use a custom sources.list
-  sourcesList: deb [trusted=yes] %s://%s %s main
-
+  portListen: 8025
+  pgpKey:
+    private: ./private.key
+    public: ./public.key
 repositories:
-# Example to docker and OCI image
-- from: oci
-  image: ghcr.io/sirherobrine23/nodeaptexample
-  # Release endpoint config
-  apt-config:
-    origin: github.com/cli/cli
-    lebel: github-cli
-    description: |
-      This is example
-      is this second line of description.
+  main:
+    targets:
+    # Example to github release
+    - from: github_release
+      repository: cli
+      owner: cli
+      takeUpTo: 3
+      removeOld: true
+      suite: cli_cli
 
-# Example to github release
-- from: github_release
-  repository: cli/cli
-
-- from: github_release
-  owner: cli
-  repository: cli
-  token: ""
+    # Example to docker/OCI images
+    - from: oci
+      image: example/content
+      enableLocalCache: true
+      cachePath: "example"
+      removeOld: true
+      suite: oci_large
+      platfom_target:
+        platform: linux
+        arch:
+        - x64
+        - arm64
+  old:
+    targets:
+    # Github repository tree
+    - from: github_tree
+      repository: APT_bysh23
+      owner: Sirherobrine23
+      suite: main
+      path:
+      - "/package/main"
+      - path: "/package/not-bysh23"
+        suite: not_by_sirherobrine
 ```
-
-## Endpoints
-
-This project was made based on the `archive.ubuntu.com` and `ftp.debian.org` routes.
-
-* `GET` /dists/:package-name/Release
-* `GET` /dists/:package-name/main/binary-:arch/Packages
-* `GET` /dists/:package-name/main/binary-:arch/Packages.gz
-* `GET` /dists/:package-name/main/binary-:arch/Releases
-
-### Download .deb and package info
-
-* `GET` /pool/:package_name/:version/:arch.deb - `Download .deb file`
-* `GET` /pool and / - `Get packages registred to packages registry`

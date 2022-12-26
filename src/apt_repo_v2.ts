@@ -180,6 +180,7 @@ export default async function main(configPath: string) {
               `Maintainer: ${control.Maintainer}`,
               `Depends: ${control.Depends}`,
               `Size: ${control.Size}`,
+              "Priority: optional",
               `MD5sum: ${control.MD5sum}`,
               `SHA1: ${control.SHA1}`,
               `SHA256: ${control.SHA256}`,

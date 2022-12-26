@@ -15,6 +15,7 @@ export type repository = ({
   image: string,
   platfom_target?: DockerRegistry.Manifest.platfomTarget,
   enableLocalCache?: boolean,
+  cachePath?: string,
   auth?: {
     username?: string,
     password?: string
@@ -30,12 +31,13 @@ export type repository = ({
   from: "github_tree",
   repository: string,
   owner?: string,
-  path?: string,
+  path?: string|(string|{path: string, suite?: string})[],
   token?: string
 }) & {
   /** cron range: https://github.com/kelektiv/node-cron#cron-ranges */
   cronRefresh?: string[],
   suite?: string,
+  removeOld?: boolean,
 }
 
 export type backendConfig = Partial<{
@@ -47,7 +49,6 @@ export type backendConfig = Partial<{
       passphrase?: string
     }
   },
-  all?: apt_config,
   repositories: {
     [distribuition: string]: {
       "apt-config"?: apt_config,
