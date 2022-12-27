@@ -1,34 +1,15 @@
-import { DebianPackage, httpRequestGithub, extendsCrypto, httpRequest, DockerRegistry } from "@sirherobrine23/coreutils";
-import { Compressor as lzmaCompressor } from "lzma-native";
-import { apt_config, getConfig, repository } from "./repoConfig.js";
-import { Readable, Writable } from "node:stream";
-import { createGzip } from "node:zlib";
+import { DebianPackage, httpRequestGithub, httpRequest, DockerRegistry } from "@sirherobrine23/coreutils";
+import { getConfig, distManegerPackages } from "./repoConfig.js";
+import { Readable } from "node:stream";
 import { CronJob } from "cron";
 import { watchFile } from "node:fs";
 import express from "express";
 import openpgp from "openpgp";
 import tar from "tar";
-
-type packageRegistry = {
-  [dist: string]: {
-    apt_config?: apt_config,
-    targetsUpdate: (() => Promise<void>)[],
-    targets: {
-      [packageName: string]: {
-        [arch: string]: {
-          [version: string]: {
-            config: repository,
-            control: DebianPackage.debianControl,
-            getStream: () => Readable|Promise<Readable>,
-          }
-        }
-      }
-    }
-  }
-};
+import { format } from "node:util";
 
 export default async function main(configPath: string) {
-  const packInfos: packageRegistry = {};
+  const packInfos = new distManegerPackages()
   let repositoryConfig = await getConfig(configPath);
   // watch config file changes
   watchFile(configPath, async () => {
@@ -54,172 +35,40 @@ export default async function main(configPath: string) {
   });
 
   // Sources list
-  app.get("/source_list", (req, res) => {
+  app.get(["/source_list", "/sources.list"], (req, res) => {
     const host = repositoryConfig["apt-config"]?.sourcesHost ?? `${req.protocol}://${req.hostname}:${req.socket.localPort}`;
-    const concatPackage = Object.keys(packInfos).map((dist) => {
-      const suites = [...(new Set(Object.keys(packInfos[dist].targets).map(packageName => Object.keys(packInfos[dist].targets[packageName]).map(arch => Object.keys(packInfos[dist].targets[packageName][arch]).map(version => packInfos[dist].targets[packageName][arch][version]?.config?.suite ?? "main"))).flat(4)))];
-      if (suites.length === 0) suites.push("main");
-      return {
-        dist,
-        suites
-      };
-    });
-    if (req.query.type === "json") return res.json(concatPackage);
-    return res.setHeader("Content-Type", "text/plain").send(concatPackage.map(({dist, suites}) => `deb ${host} ${dist} ${(suites ?? ["main"]).join(" ")}`).join("\n"));
+    const concatPackage = packInfos.getAllDistribuitions();
+    const type = req.query.type ?? req.query.t;
+    if (type === "json") return res.json(concatPackage);
+    else if (type === "deb822") {
+      const data = concatPackage.map(({distribuition, suitesName: suites}) => format("Types: deb\nURIs: %s\nSuites: %s\nComponents: %s\n", host, distribuition, (suites ?? ["main"]).join(" ")));
+      return res.setHeader("Content-Type", "text/plain").send(data.join("\n\n"));
+    }
+    return res.setHeader("Content-Type", "text/plain").send(concatPackage.map(({distribuition, suitesName: suites}) => `deb ${host} ${distribuition} ${(suites ?? ["main"]).join(" ")}`).join("\n"));
   });
 
-  app.get(["/", "/pool"], (_req, res) => {
-    const concatPackage = Object.keys(packInfos).map((dist) => {
-      const packages = Object.keys(packInfos[dist].targets).map(packageName => {
-        const arch = Object.keys(packInfos[dist].targets[packageName]);
-        const packageCount = arch.map(arch => Object.keys(packInfos[dist].targets[packageName][arch]).length).reduce((a, b) => a + b);
-        return {
-          package: packageName,
-          packageCount,
-          arch,
-        };
-      });
-      const arch = [...(new Set(packages.map(({arch}) => arch).flat()))];
-      return {
-        dist,
-        packages,
-        arch,
-      };
-    });
-    return res.json(concatPackage);
-  });
 
   // Download
-  app.get("/pool/:dist/:packageName/:arch/:version/download.deb", async (req, res) => {
-    const dist = packInfos[req.params.dist];
-    if (!dist) return res.status(400).json({error: "Dist not found"});
-    const packageobject = dist.targets[req.params.packageName];
-    if (!packageobject) return res.status(400).json({error: "Package not found"});
-    const arch = packageobject[req.params.arch];
-    if (!arch) return res.status(400).json({error: "Arch not found"});
-    const version = arch[req.params.version];
-    if (!version) return res.status(400).json({error: "Version not found"});
-    return Promise.resolve().then(() => version.getStream()).then(stream => stream.pipe(res.writeHead(200, {
+  app.get("/pool/:dist/:suite/:packageName/:arch/:version/download.deb", async (req, res) => {
+    const {dist, suite, packageName, arch, version} = req.params;
+    return packInfos.getPackageStream(dist, suite, arch, packageName, version).then(({stream, control}) => stream.pipe(res.writeHead(200, {
       "Content-Type": "application/vnd.debian.binary-package",
-      "Content-Length": version.control.Size,
-      "Content-MD5": version.control.MD5sum,
-      "Content-SHA1": version.control.SHA1,
-      "Content-SHA256": version.control.SHA256,
+      "Content-Length": control.Size,
+      "Content-MD5": control.MD5sum,
+      "Content-SHA1": control.SHA1,
+      "Content-SHA256": control.SHA256,
     })));
   });
-  app.get("/pool/:dist/:packageName/:arch/:version", async (req, res) => {
-    const dist = packInfos[req.params.dist];
-    if (!dist) return res.status(400).json({error: "Dist not found"});
-    const packageobject = dist.targets[req.params.packageName];
-    if (!packageobject) return res.status(400).json({error: "Package not found"});
-    const arch = packageobject[req.params.arch];
-    if (!arch) return res.status(400).json({error: "Arch not found"});
-    const version = arch[req.params.version];
-    if (!version) return res.status(400).json({error: "Version not found"});
-    return res.json(version.control);
-  });
-  app.get("/pool/:dist/:packageName/:arch", async (req, res) => {
-    const dist = packInfos[req.params.dist];
-    if (!dist) return res.status(400).json({error: "Dist not found"});
-    const packageobject = dist.targets[req.params.packageName];
-    if (!packageobject) return res.status(400).json({error: "Package not found"});
-    const arch = packageobject[req.params.arch];
-    if (!arch) return res.status(400).json({error: "Arch not found"});
-    return res.json(Object.keys(arch));
-  });
-  app.get("/pool/:dist/:packageName", async (req, res) => {
-    const dist = packInfos[req.params.dist];
-    if (!dist) return res.status(400).json({error: "Dist not found"});
-    const packageobject = dist.targets[req.params.packageName];
-    if (!packageobject) return res.status(400).json({error: "Package not found"});
-    return res.json(Object.keys(packageobject));
-  });
-  app.get("/pool/:dist", async (req, res) => {
-    const dist = packInfos[req.params.dist];
-    if (!dist) return res.status(400).json({error: "Dist not found"});
-    return res.json(Object.keys(dist.targets));
-  });
-
-  async function createPackages(options?: {compress?: "gzip" | "xz", writeStream?: Writable, dist?: string, package?: string, arch?: string, suite?: string}) {
-    const rawWrite = new Readable({read(){}});
-    let size = 0;
-    let hash: ReturnType<typeof extendsCrypto.createHashAsync>|undefined;
-    if (options?.compress === "gzip") {
-      const gzip = rawWrite.pipe(createGzip({level: 9}));
-      if (options?.writeStream) gzip.pipe(options.writeStream);
-      hash = extendsCrypto.createHashAsync("all", gzip);
-      gzip.on("data", (chunk) => size += chunk.length);
-    } else if (options?.compress === "xz") {
-      const lzma = rawWrite.pipe(lzmaCompressor());
-      if (options?.writeStream) lzma.pipe(options.writeStream);
-      hash = extendsCrypto.createHashAsync("all", lzma);
-      lzma.on("data", (chunk) => size += chunk.length);
-    } else {
-      if (options?.writeStream) rawWrite.pipe(options.writeStream);
-      hash = extendsCrypto.createHashAsync("all", rawWrite);
-      rawWrite.on("data", (chunk) => size += chunk.length);
-    }
-
-    let addbreak = false;
-    for (const dist in packInfos) {
-      if (options?.dist && dist !== options.dist) continue;
-      for (const packageName in packInfos[dist]?.targets ?? {}) {
-        if (options?.package && packageName !== options.package) continue;
-        const packageobject = packInfos[dist]?.targets?.[packageName] ?? {};
-        for (const arch in packageobject) {
-          if (options?.arch && arch !== options.arch) continue;
-          for (const version in packageobject[arch]) {
-            if (addbreak) rawWrite.push("\n\n");
-            addbreak = true;
-            const {control} = packageobject[arch][version];
-            const Data = [
-              `Package: ${packageName}`,
-              `Version: ${version}`,
-              `Architecture: ${arch}`,
-              `Maintainer: ${control.Maintainer}`,
-              `Size: ${control.Size}`,
-              `MD5sum: ${control.MD5sum}`,
-              `SHA1: ${control.SHA1}`,
-              `SHA256: ${control.SHA256}`,
-              `Filename: pool/${dist}/${packageName}/${arch}/${version}/download.deb`,
-            ];
-
-            if (control.Homepage) Data.push(`Homepage: ${control.Homepage}`);
-            if (control.Depends) Data.push(`Depends: ${control.Depends}`);
-            if (control.Section) Data.push(`Section: ${control.Section}`);
-            if (control.Priority) Data.push(`Priority: ${control.Priority}`);
-            if (control["Installed-Size"]) Data.push(`Installed-Size: ${control["Installed-Size"]}`);
-            if (control["Original-Maintainer"]) Data.push(`Original-Maintainer: ${control["Original-Maintainer"]}`);
-            if (control["Built-Using"]) Data.push(`Built-Using: ${control["Built-Using"]}`);
-            if (control["Package-Type"]) Data.push(`Package-Type: ${control["Package-Type"]}`);
-            if (control["Package-List"]) Data.push(`Package-List: ${control["Package-List"]}`);
-            if (control["Multi-Arch"]) Data.push(`Multi-Arch: ${control["Multi-Arch"]}`);
-            if (control["Essential"]) Data.push(`Essential: ${control["Essential"]}`);
-            if (control["Pre-Depends"]) Data.push(`Pre-Depends: ${control["Pre-Depends"]}`);
-            if (control["Recommends"]) Data.push(`Recommends: ${control["Recommends"]}`);
-            if (control["Suggests"]) Data.push(`Suggests: ${control["Suggests"]}`);
-            if (control["Breaks"]) Data.push(`Breaks: ${control["Breaks"]}`);
-            if (control["Conflicts"]) Data.push(`Conflicts: ${control["Conflicts"]}`);
-            if (control["Replaces"]) Data.push(`Replaces: ${control["Replaces"]}`);
-            if (control["Provides"]) Data.push(`Provides: ${control["Provides"]}`);
-            if (control["Enhances"]) Data.push(`Enhances: ${control["Enhances"]}`);
-            if (control.Description) Data.push(`Description: ${control.Description}`);
-
-            // Register
-            rawWrite.push(Data.join("\n"));
-          }
-        }
-      }
-    }
-
-    rawWrite.push(null);
-    if (hash) return hash.then(hash => ({...hash, size}));
-    return null;
-  }
+  app.get("/pool/:dist/:suite/:packageName/:arch/:version", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist, req.params.suite, req.params.arch, req.params.packageName, req.params.version)));
+  app.get("/pool/:dist/:suite/:packageName/:arch", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist, req.params.suite, req.params.arch, req.params.packageName)));
+  app.get("/pool/:dist/:suite/:packageName", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist, req.params.suite, req.params.packageName)));
+  app.get("/pool/:dist/:suite", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist, req.params.suite)));
+  app.get("/pool/:dist", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist)));
+  app.get(["/pool", "/"], (_req, res) => res.json(packInfos.getAllDistribuitions()));
 
   app.get("/dists/:dist/:suite/binary-:arch/Packages(.(xz|gz)|)", (req, res) => {
     if (req.path.endsWith(".gz")) {
-      createPackages({
+      packInfos.createPackages({
         compress: "gzip",
         dist: req.params.dist,
         arch: req.params.arch,
@@ -230,7 +79,7 @@ export default async function main(configPath: string) {
         }),
       });
     } else if (req.path.endsWith(".xz")) {
-      createPackages({
+      packInfos.createPackages({
         compress: "xz",
         dist: req.params.dist,
         arch: req.params.arch,
@@ -241,7 +90,7 @@ export default async function main(configPath: string) {
         }),
       });
     } else {
-      createPackages({
+      packInfos.createPackages({
         dist: req.params.dist,
         arch: req.params.arch,
         suite: req.params.suite,
@@ -254,65 +103,96 @@ export default async function main(configPath: string) {
 
   // Release
   async function createReleaseV1(dist: string) {
-    const packageobject = packInfos[dist];
-    if (!packageobject) throw new Error("Dist not found");
+    const { suitesName: suites, archs } = packInfos.getDistribuition(dist);
+    const distConfig = repositoryConfig.repositories[dist];
+    if (!distConfig) throw new Error("Dist not found");
     const ReleaseLines = [];
 
     // Origin
-    const Origin = packageobject.apt_config?.origin || repositoryConfig["apt-config"]?.origin || "apt-stream";
+    const Origin = distConfig["apt-config"]?.origin || repositoryConfig["apt-config"]?.origin || "apt-stream";
     ReleaseLines.push(`Origin: ${Origin}`);
 
     // Lebel
-    const Label = packageobject.apt_config?.label || repositoryConfig["apt-config"]?.label || "apt-stream";
+    const Label = distConfig["apt-config"]?.label || repositoryConfig["apt-config"]?.label || "apt-stream";
     ReleaseLines.push(`Label: ${Label}`);
 
     // Codename if exists
-    const codename = packageobject.apt_config?.codename || repositoryConfig["apt-config"]?.codename;
+    const codename = distConfig["apt-config"]?.codename || repositoryConfig["apt-config"]?.codename;
     if (codename) ReleaseLines.push(`Codename: ${codename}`);
 
     // Date
     ReleaseLines.push(`Date: ${new Date().toUTCString()}`);
 
-    // Suite
-    const Suites = [...(new Set(Object.keys(packageobject.targets).map(pack => Object.keys(packageobject.targets[pack]).map(arch => Object.keys(packageobject.targets[pack][arch]).map(version => packageobject.targets[pack][arch][version]?.config?.suite))).flat(3)))];
-    if (Suites.length === 0) Suites.push("main");
-
     // Architectures
-    const archs = [...(new Set(Object.keys(packageobject.targets).map(pack => Object.keys(packageobject.targets[pack])).flat()))];
     if (archs.length === 0) throw new Error("No architectures found");
     ReleaseLines.push(`Architectures: ${archs.join(" ")}`);
 
-    const createPackagesHash = packageobject.apt_config?.enableHash ?? repositoryConfig["apt-config"]?.enableHash ?? true;
+    const createPackagesHash = distConfig["apt-config"]?.enableHash ?? repositoryConfig["apt-config"]?.enableHash ?? true;
     if (createPackagesHash) {
-      const sha256: {file: string, size: number, hash: string}[] = [];
-      const sha1: {file: string, size: number, hash: string}[] = [];
-      const md5: {file: string, size: number, hash: string}[] = [];
+      const hashs = (await Promise.all(archs.map(async arch => Promise.all(suites.map(async suite => {
+        const [gzip, xz, raw] = await Promise.all([packInfos.createPackages({compress: "gzip", dist, arch, suite}), packInfos.createPackages({compress: "xz", dist, arch, suite}), packInfos.createPackages({dist, arch, suite})]);
+        return {
+          gz: {
+            sha256: {
+              file: `${suite}/binary-${arch}/Packages.gz`,
+              size: gzip.size,
+              hash: gzip.sha256
+            },
+            sha1: {
+              file: `${suite}/binary-${arch}/Packages.gz`,
+              size: gzip.size,
+              hash: gzip.sha1
+            },
+            md5: {
+              file: `${suite}/binary-${arch}/Packages.gz`,
+              size: gzip.size,
+              hash: gzip.md5
+            }
+          },
+          xz: {
+            sha256: {
+              file: `${suite}/binary-${arch}/Packages.xz`,
+              size: xz.size,
+              hash: xz.sha256
+            },
+            sha1: {
+              file: `${suite}/binary-${arch}/Packages.xz`,
+              size: xz.size,
+              hash: xz.sha1
+            },
+            md5: {
+              file: `${suite}/binary-${arch}/Packages.xz`,
+              size: xz.size,
+              hash: xz.md5
+            }
+          },
+          raw: {
+            sha256: {
+              file: `${suite}/binary-${arch}/Packages`,
+              size: raw.size,
+              hash: raw.sha256
+            },
+            sha1: {
+              file: `${suite}/binary-${arch}/Packages`,
+              size: raw.size,
+              hash: raw.sha1
+            },
+            md5: {
+              file: `${suite}/binary-${arch}/Packages`,
+              size: raw.size,
+              hash: raw.md5
+            }
+          }
+        };
+      }))))).flat(2);
 
-      for (const arch of archs) {
-        for (const suite of Suites) {
-          const gzip = await createPackages({compress: "gzip", dist, arch, suite});
-          if (gzip) {
-            sha256.push({file: `${suite}/binary-${arch}/Packages.gz`, size: gzip.size, hash: gzip.sha256});
-            sha1.push({file: `${suite}/binary-${arch}/Packages.gz`, size: gzip.size, hash: gzip.sha1});
-            md5.push({file: `${suite}/binary-${arch}/Packages.gz`, size: gzip.size, hash: gzip.md5});
-          }
-          const xz = await createPackages({compress: "xz", dist, arch, suite});
-          if (xz) {
-            sha256.push({file: `${suite}/binary-${arch}/Packages.xz`, size: xz.size, hash: xz.sha256});
-            sha1.push({file: `${suite}/binary-${arch}/Packages.xz`, size: xz.size, hash: xz.sha1});
-            md5.push({file: `${suite}/binary-${arch}/Packages.xz`, size: xz.size, hash: xz.md5});
-          }
-          const raw = await createPackages({dist, arch, suite});
-          if (raw) {
-            sha256.push({file: `${suite}/binary-${arch}/Packages`, size: raw.size, hash: raw.sha256});
-            sha1.push({file: `${suite}/binary-${arch}/Packages`, size: raw.size, hash: raw.sha1});
-            md5.push({file: `${suite}/binary-${arch}/Packages`, size: raw.size, hash: raw.md5});
-          }
-        }
-      }
-
+      const sha256 = hashs.map(hash => hash.raw.sha256).concat(hashs.map(hash => hash.gz.sha256)).concat(hashs.map(hash => hash.xz.sha256));
       if (sha256.length > 0) ReleaseLines.push(`SHA256:${sha256.sort().map((hash) => `\n  ${hash.hash} ${hash.size} ${hash.file}`).join("")}`);
+
+      const sha1 = hashs.map(hash => hash.raw.sha1).concat(hashs.map(hash => hash.gz.sha1)).concat(hashs.map(hash => hash.xz.sha1));
       if (sha1.length > 0) ReleaseLines.push(`SHA1:${sha1.sort().map((hash) => `\n  ${hash.hash} ${hash.size} ${hash.file}`).join("")}`);
+
+      const md5 = hashs.map(hash => hash.raw.md5).concat(hashs.map(hash => hash.gz.md5)).concat(hashs.map(hash => hash.xz.md5));
       if (md5.length > 0) ReleaseLines.push(`MD5Sum:${md5.sort().map((hash) => `\n  ${hash.hash} ${hash.size} ${hash.file}`).join("")}`);
     }
 
@@ -355,7 +235,7 @@ export default async function main(configPath: string) {
     console.error(err);
     res.status(500).json({
       error: err?.message||err,
-      stack: err?.stack,
+      stack: err?.stack?.split("\n"),
     });
   });
 
@@ -367,30 +247,21 @@ export default async function main(configPath: string) {
   const waitPromises: Promise<void>[] = [];
   for (const dist in repositoryConfig.repositories) {
     const targets = repositoryConfig.repositories[dist].targets;
-    const apt_config = repositoryConfig.repositories[dist]["apt-config"];
-    if (!packInfos[dist]) packInfos[dist] = {
-      apt_config,
-      targets: {},
-      targetsUpdate: [],
-    };
     for (const repository of targets) {
       const update = async () => {
         if (repository.from === "oci") {
           const registry = await DockerRegistry.Manifest.Manifest(repository.image, repository.platfom_target);
-          await registry.layersStream((data) => {
+          return registry.layersStream((data) => {
             if (!(["gzip", "gz", "tar"]).some(ends => data.layer.mediaType.endsWith(ends))) return data.next();
             data.stream.pipe(tar.list({
               async onentry(entry) {
                 if (!entry.path.endsWith(".deb")) return null;
-                console.info(`[INFO] Get control ${dist} ${entry.path} ${repository.image} ${entry.path}`);
                 const control = await DebianPackage.extractControl(entry as any);
-                if (!packInfos[dist].targets[control.Package]) packInfos[dist].targets[control.Package] = {};
-                if (!packInfos[dist].targets[control.Package][control.Architecture]) packInfos[dist].targets[control.Package][control.Architecture] = {};
-                console.info(`[INFO] Add/Replace ${dist} ${control.Package} ${control.Version} ${control.Architecture} ${repository.image} ${entry.path}`);
-                packInfos[dist].targets[control.Package][control.Architecture][control.Version] = {
-                  config: repository,
+                const suite = repository.suite ?? "main";
+                packInfos.addPackage(dist, suite, {
+                  repositoryConfig: repository,
                   control,
-                  getStream: async () => {
+                  async getStream() {
                     return new Promise<Readable>((done, reject) => registry.blobLayerStream(data.layer.digest).then(stream => {
                       stream.on("error", reject);
                       stream.pipe(tar.list({
@@ -402,51 +273,71 @@ export default async function main(configPath: string) {
                       }).on("error", reject));
                     }).catch(reject));
                   }
-                };
+                });
               }
             }));
           });
         } else if (repository.from === "github_release") {
-          const relData = repository.tags ? await Promise.all(repository.tags.map(async (tag) => httpRequestGithub.GithubRelease({repository: repository.repository, owner: repository.owner, token: repository.token, releaseTag: tag}))) : (await httpRequestGithub.GithubRelease({repository: repository.repository, owner: repository.owner, token: repository.token, all: false})).slice(0, repository.assetsLimit ?? 10);
-          const assets = relData.flat().map((rel) => rel.assets).flat().filter((asset) => asset.name.endsWith(".deb")).flat();
-          const newAssests = new Array(Math.ceil(assets.length / 10)).fill(0).map(() => assets.splice(0, 10));
-          for (const assets of newAssests) await Promise.all(assets.map(async (asset) => {
-            console.info(`[INFO] Get control ${dist} ${asset.name} ${asset.browser_download_url}`)
-            const getStream = () => httpRequest.pipeFetch(asset.browser_download_url);
+          if (repository.tags) {
+            const release = await Promise.all(repository.tags.map(async releaseTag => httpRequestGithub.GithubRelease({
+              owner: repository.owner,
+              repository: repository.repository,
+              token: repository.token,
+              releaseTag,
+            })));
+            return Promise.all(release.map(async release => Promise.all(release.assets.map(async ({browser_download_url, name}) => {
+              if (!name.endsWith(".deb")) return null;
+              const getStream = () => httpRequest.pipeFetch(browser_download_url);
+              const control = await DebianPackage.extractControl(await getStream());
+              return packInfos.addPackage(dist, repository.suite ?? release.tag_name, {
+                repositoryConfig: repository,
+                control,
+                getStream,
+              });
+            })))).then(data => data.flat(2).filter(Boolean));
+          }
+          const release = await httpRequestGithub.GithubRelease({owner: repository.owner, repository: repository.repository, token: repository.token, peer: repository.assetsLimit, all: false});
+          return Promise.all(release.map(async release => Promise.all(release.assets.map(async ({browser_download_url, name}) => {
+            if (!name.endsWith(".deb")) return null;
+            const getStream = () => httpRequest.pipeFetch(browser_download_url);
             const control = await DebianPackage.extractControl(await getStream());
-            if (!packInfos[dist].targets[control.Package]) packInfos[dist].targets[control.Package] = {};
-            if (!packInfos[dist].targets[control.Package][control.Architecture]) packInfos[dist].targets[control.Package][control.Architecture] = {};
-            console.info(`[INFO] Add/Replace ${dist} ${control.Package} ${control.Version} ${control.Architecture} ${asset.browser_download_url}`);
-            return packInfos[dist].targets[control.Package][control.Architecture][control.Version] = {
-              config: repository,
+            return packInfos.addPackage(dist, repository.suite ?? release.tag_name, {
+              repositoryConfig: repository,
               control,
-              getStream: getStream,
-            };
-          }));
+              getStream,
+            });
+          })))).then(data => data.flat(2).filter(Boolean));
         } else if (repository.from === "github_tree") {
-          const tree = (await httpRequestGithub.githubTree(repository.owner, repository.repository, repository.tree)).tree.filter(({path}) => path.endsWith(".deb")).map(({path}) => path);
-          const newTree = new Array(Math.ceil(tree.length / 10)).fill(0).map(() => tree.splice(0, 10));
-          for (const tree of newTree) await Promise.all(tree.map(async (path) => {
-            console.info(`[INFO] Get control ${dist} ${path} ${repository.repository} ${path}`);
+          const { tree } = await httpRequestGithub.githubTree(repository.owner, repository.repository, repository.tree);
+          const filtedTree = tree.filter(({path: remotePath}) => {
+            if (repository.path) return repository.path.some(repoPath => {
+              if (!remotePath.startsWith("/")) remotePath = "/" + remotePath;
+              if (typeof repoPath === "string") {
+                if (!repoPath.startsWith("/")) repoPath = "/" + repoPath;
+                return remotePath.startsWith(repoPath);
+              }
+              return false;
+            });
+            return true;
+          }).filter(({path, type}) => path.endsWith(".deb") && type === "blob");
+          return Promise.all(filtedTree.map(async ({path}) => {
             const getStream = () => httpRequest.pipeFetch(`https://raw.githubusercontent.com/${repository.owner}/${repository.repository}/${repository.tree}/${path}`);
             const control = await DebianPackage.extractControl(await getStream());
-            if (!packInfos[dist].targets[control.Package]) packInfos[dist].targets[control.Package] = {};
-            if (!packInfos[dist].targets[control.Package][control.Architecture]) packInfos[dist].targets[control.Package][control.Architecture] = {};
-            console.info(`[INFO] Add/Replace ${dist} ${control.Package} ${control.Version} ${control.Architecture} ${repository.repository} ${path}`);
-            return packInfos[dist].targets[control.Package][control.Architecture][control.Version] = {
-              config: repository,
+            return packInfos.addPackage(dist, repository.suite ?? repository.tree, {
+              repositoryConfig: repository,
               control,
-              getStream: getStream,
-            };
+              getStream,
+            });
           }));
         }
+        console.log("%s not registred to manipulate package", repository.from);
+        return null;
       }
       waitPromises.push(update().then(() => {
-          const cron = (repository.cronRefresh ?? []).map((cron) => new CronJob(cron, update));
-          cron.forEach((cron) => cron.start());
-          cronJobs.push(...cron);
-          packInfos[dist].targetsUpdate.push(update);
-        }).catch(console.error));
+        const cron = (repository.cronRefresh ?? []).map((cron) => new CronJob(cron, update));
+        cron.forEach((cron) => cron.start());
+        cronJobs.push(...cron);
+      }).catch(console.error));
     }
   }
   await Promise.all(waitPromises);
