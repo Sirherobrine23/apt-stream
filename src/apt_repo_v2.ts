@@ -7,16 +7,11 @@ import express from "express";
 import openpgp from "openpgp";
 import tar from "tar";
 import { format } from "node:util";
+import path from "node:path";
 
 export default async function main(configPath: string) {
   const packInfos = new distManegerPackages()
   let repositoryConfig = await getConfig(configPath);
-  // watch config file changes
-  watchFile(configPath, async () => {
-    console.info("Config file changed, reloading config and update packages...");
-    repositoryConfig = await getConfig(configPath);
-    for (const dist in packInfos) await Promise.all(packInfos[dist].targetsUpdate.map((func) => func().catch(console.error)));
-  });
   const app = express();
   app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({ extended: true })).use((req, res, next) => {
     res.json = (data) => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data, null, 2));
@@ -36,17 +31,25 @@ export default async function main(configPath: string) {
 
   // Sources list
   app.get(["/source_list", "/sources.list"], (req, res) => {
-    const host = repositoryConfig["apt-config"]?.sourcesHost ?? `${req.protocol}://${req.hostname}:${req.socket.localPort}`;
+    const remotePath = path.posix.resolve(req.baseUrl + req.path, "..");
+    const host = repositoryConfig["apt-config"]?.sourcesHost ?? `${req.protocol}://${req.hostname}:${req.socket.localPort}${remotePath}`;
     const concatPackage = packInfos.getAllDistribuitions();
     const type = req.query.type ?? req.query.t;
-    if (type === "json") return res.json(concatPackage);
-    else if (type === "deb822") {
-      const data = concatPackage.map(({distribuition, suitesName: suites}) => format("Types: deb\nURIs: %s\nSuites: %s\nComponents: %s\n", host, distribuition, (suites ?? ["main"]).join(" ")));
-      return res.setHeader("Content-Type", "text/plain").send(data.join("\n\n"));
+    const Conflicting = !!(req.query.conflicting ?? req.query.c);
+    if (type === "deb822") {
+      const data = concatPackage.map(({distribuition, suitesName: suites}) => format("Types: deb\nURIs: %s\nSuites: %s\nComponents: %s", host, distribuition, (suites ?? ["main"]).join(" ")));
+      return res.setHeader("Content-Type", "text/plain").send(data.join("\n"));
+    } else if (type === "json") {
+      return res.json({
+        host,
+        distribuitions: concatPackage.map(({distribuition, suitesName: suites}) => ({
+          distribuition,
+          suites: suites ?? ["main"],
+        }))
+      });
     }
-    return res.setHeader("Content-Type", "text/plain").send(concatPackage.map(({distribuition, suitesName: suites}) => `deb ${host} ${distribuition} ${(suites ?? ["main"]).join(" ")}`).join("\n"));
+    return res.setHeader("Content-Type", "text/plain").send(concatPackage.map(({distribuition, suitesName: suites}) => `deb ${host} ${Conflicting?"./":""}${distribuition} ${(suites ?? ["main"]).join(" ")}`).join("\n"));
   });
-
 
   // Download
   app.get("/pool/:dist/:suite/:packageName/:arch/:version/download.deb", async (req, res) => {
@@ -66,7 +69,7 @@ export default async function main(configPath: string) {
   app.get("/pool/:dist", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist)));
   app.get(["/pool", "/"], (_req, res) => res.json(packInfos.getAllDistribuitions()));
 
-  app.get("/dists/:dist/:suite/binary-:arch/Packages(.(xz|gz)|)", (req, res) => {
+  app.get("/dists/(./)?:dist/:suite/binary-:arch/Packages(.(xz|gz)|)", (req, res) => {
     if (req.path.endsWith(".gz")) {
       packInfos.createPackages({
         compress: "gzip",
@@ -109,15 +112,15 @@ export default async function main(configPath: string) {
     const ReleaseLines = [];
 
     // Origin
-    const Origin = distConfig["apt-config"]?.origin || repositoryConfig["apt-config"]?.origin || "apt-stream";
-    ReleaseLines.push(`Origin: ${Origin}`);
+    const Origin = distConfig["apt-config"]?.origin ?? repositoryConfig["apt-config"]?.origin;
+    if (Origin) ReleaseLines.push(`Origin: ${Origin}`);
 
     // Lebel
-    const Label = distConfig["apt-config"]?.label || repositoryConfig["apt-config"]?.label || "apt-stream";
-    ReleaseLines.push(`Label: ${Label}`);
+    const Label = distConfig["apt-config"]?.label ?? repositoryConfig["apt-config"]?.label;
+    if (Label) ReleaseLines.push(`Label: ${Label}`);
 
     // Codename if exists
-    const codename = distConfig["apt-config"]?.codename || repositoryConfig["apt-config"]?.codename;
+    const codename = distConfig["apt-config"]?.codename ?? repositoryConfig["apt-config"]?.codename;
     if (codename) ReleaseLines.push(`Codename: ${codename}`);
 
     // Date
@@ -127,8 +130,13 @@ export default async function main(configPath: string) {
     if (archs.length === 0) throw new Error("No architectures found");
     ReleaseLines.push(`Architectures: ${archs.join(" ")}`);
 
+    // Components
+    if (suites.length === 0) throw new Error("No suites found");
+    ReleaseLines.push(`Components: ${suites.join(" ")}`);
+
     const createPackagesHash = distConfig["apt-config"]?.enableHash ?? repositoryConfig["apt-config"]?.enableHash ?? true;
     if (createPackagesHash) {
+      ReleaseLines.push("Acquire-By-Hash: yes");
       const hashs = (await Promise.all(archs.map(async arch => Promise.all(suites.map(async suite => {
         const [gzip, xz, raw] = await Promise.all([packInfos.createPackages({compress: "gzip", dist, arch, suite}), packInfos.createPackages({compress: "xz", dist, arch, suite}), packInfos.createPackages({dist, arch, suite})]);
         return {
@@ -198,8 +206,8 @@ export default async function main(configPath: string) {
 
     return ReleaseLines.join("\n");
   }
-  app.get("/dists/:dist/Release", (req, res, next) => createReleaseV1(req.params.dist).then((data) => res.setHeader("Content-Type", "text/plain").send(data)).catch(next));
-  app.get("/dists/:dist/InRelease", (req, res, next) => {
+  app.get("/dists/(./)?:dist/Release", (req, res, next) => createReleaseV1(req.params.dist).then((data) => res.setHeader("Content-Type", "text/plain").send(data)).catch(next));
+  app.get("/dists/(./)?:dist/InRelease", (req, res, next) => {
     const Key = repositoryConfig["apt-config"]?.pgpKey;
     if (!Key) return res.status(404).json({error: "No PGP key found"});
     return Promise.resolve().then(async () => {
@@ -212,7 +220,7 @@ export default async function main(configPath: string) {
       }));
     }).catch(next);
   });
-  app.get("/dists/:dist/Release.gpg", (req, res, next) => {
+  app.get("/dists/(./)?:dist/Release.gpg", (req, res, next) => {
     const Key = repositoryConfig["apt-config"]?.pgpKey;
     if (!Key) return res.status(404).json({error: "No PGP key found"});
     return Promise.resolve().then(async () => {
@@ -240,6 +248,7 @@ export default async function main(configPath: string) {
   });
 
   // Listen HTTP server
+  // express().use(repositoryConfig["apt-config"]?.rootPath ?? "/", app).all("*", ({res}) => res.json({error: "404"})).listen(repositoryConfig["apt-config"].portListen, function () {return console.log(`apt-repo listening at http://localhost:${this.address().port}`);});
   app.listen(repositoryConfig["apt-config"].portListen, function () {return console.log(`apt-repo listening at http://localhost:${this.address().port}`);});
 
   // Loading and update packages
@@ -340,5 +349,11 @@ export default async function main(configPath: string) {
       }).catch(console.error));
     }
   }
-  await Promise.all(waitPromises);
+  // watch config file changes
+  watchFile(configPath, async () => {
+    console.info("Config file changed, reloading config and update packages...");
+    repositoryConfig = await getConfig(configPath);
+  });
+  // await Promise.all(waitPromises);
+  return app;
 }

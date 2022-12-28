@@ -5,6 +5,7 @@ import { createGzip } from "node:zlib";
 import { Compressor as lzmaCompressor } from "lzma-native";
 import yaml from "yaml";
 import fs from "node:fs/promises";
+import path from "node:path";
 
 export type apt_config = {
   origin?: string,
@@ -17,6 +18,7 @@ export type apt_config = {
 export type repository = ({
   from: "mirror",
   uri: string,
+  saveFiles?: string,
   dists: {
     [distribuition: string]: {
       suites: string[],
@@ -72,6 +74,7 @@ export type repository = ({
 export type backendConfig = Partial<{
   "apt-config"?: apt_config & {
     portListen?: number,
+    rootPath?: string,
     pgpKey?: {
       private: string,
       public: string,
@@ -95,6 +98,11 @@ export async function getConfig(filePath: string) {
   const fixedConfig: backendConfig = {};
   const configData: backendConfig = yaml.parse(await fs.readFile(filePath, "utf8"));
   fixedConfig["apt-config"] = configData["apt-config"] ?? {enableHash: true, label: "apt-stream"};
+  if (fixedConfig["apt-config"].pgpKey) {
+    const pgpKey = fixedConfig["apt-config"].pgpKey;
+    if (!pgpKey.private.startsWith("---")) fixedConfig["apt-config"].pgpKey.private = await fs.readFile(path.resolve(path.dirname(filePath), pgpKey.private), "utf8");
+    if (!pgpKey.public.startsWith("---")) fixedConfig["apt-config"].pgpKey.public = await fs.readFile(path.resolve(path.dirname(filePath), pgpKey.public), "utf8");
+  }
   fixedConfig.repositories = {};
   if (!configData.repositories) configData.repositories = {};
   else if (Array.isArray(configData.repositories) && typeof configData.repositories === "object") configData.repositories = {};

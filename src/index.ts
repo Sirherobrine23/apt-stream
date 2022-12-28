@@ -3,12 +3,14 @@ import yargs from "yargs";
 import repo from "./apt_repo_v2.js";
 import openpgp from "openpgp";
 import { getConfig, saveConfig } from "./repoConfig.js";
+import path from "node:path";
+import { writeFile } from "node:fs/promises";
 
 yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommands().alias("h", "help").option("cofig-path", {
   type: "string",
   default: process.cwd()+"/repoconfig.yml",
 }).command("config", "maneger basics configs", async yargs => {
-  return yargs.demandCommand().strictCommands().command("generate-keys", "Generate PGP keys", async yargs => {
+  return yargs.demandCommand().strictCommands().command("keys", "Generate PGP keys", async yargs => {
     const options = yargs.option("passphrase", {
       type: "string",
       default: "",
@@ -30,6 +32,8 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     if (!options.email) throw new Error("email is required");
     if (!options.name) throw new Error("name is required");
     if (!options.passphrase) options.passphrase = undefined;
+    const privatePath = path.resolve(path.dirname(options.cofigPath), "private.key");
+    const publicPath = path.resolve(path.dirname(options.cofigPath), "public.key");
     const keys = await openpgp.generateKey({
       rsaBits: 4096,
       format: "armored",
@@ -42,11 +46,9 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
       }],
     });
     if (!config["apt-config"]) config["apt-config"] = {};
-    config["apt-config"].pgpKey = {
-      private: keys.privateKey,
-      public: keys.publicKey,
-      passphrase: options.passphrase,
-    };
+    await writeFile(privatePath, keys.privateKey);
+    await writeFile(publicPath, keys.publicKey);
+    config["apt-config"].pgpKey = {passphrase: options.passphrase, private: privatePath, public: publicPath};
     console.log("PGP keys generated");
     // Private key
     console.log("Private Key:\n%s\n", keys.privateKey);
@@ -54,7 +56,7 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     console.log("Public Key:\n%s", keys.publicKey);
     await saveConfig(options.cofigPath, config);
     console.log("Config saved in '%s'", options.cofigPath);
-  }).parseAsync();
+  });
 }).command("server", "Run HTTP serber", yargs => {
   const options = yargs.parseSync();
   return repo(options.cofigPath);

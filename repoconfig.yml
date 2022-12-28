@@ -1,205 +1,35 @@
 apt-config:
   portListen: 3000
-  origin: "Sirherobrine23"
-  label: Sirherobrine23-repo
   enableHash: true
   pgpKey:
-    private: |
-      -----BEGIN PGP PRIVATE KEY BLOCK-----
-
-      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
-      =8o1a
-      -----END PGP PRIVATE KEY BLOCK-----
-    public: |
-      -----BEGIN PGP PUBLIC KEY BLOCK-----
-
-      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
-      iKy5h0djTyX95owar8j3Lg==
-      =Xjxj
-      -----END PGP PUBLIC KEY BLOCK-----
+    private: ./private.key
+    public: ./public.key
 repositories:
-  main:
-    targets:
-    # Github CLI
-    - from: github_release
-      repository: cli
-      owner: cli
-      assetsLimit: 3
-
   github:
+    apt-config: {}
     targets:
-    - from: github_release
-      repository: desktop
-      owner: shiftkey
-      assetsLimit: 3
-      cronRefresh:
-      - "0/30 0 * * *"
-
-  old:
+      - from: github_release
+        repository: cli
+        owner: cli
+        tags:
+        - v2.21.1
+        - v2.21.0
+      - from: github_release
+        repository: desktop
+        owner: shiftkey
+        suite: main
+        assetsLimit: 3
+        cronRefresh:
+          - 0/30 0 * * *
+  APT_bysh23:
+    apt-config: {}
     targets:
-    # Github repository tree
-    - from: github_tree
-      repository: APT_bysh23
-      owner: Sirherobrine23
-      suite: main
-      tree: master
-      path:
-      - "/package/main"
-      - path: "/package/not-bysh23"
-        suite: not_by_sirherobrine
+      - from: github_tree
+        repository: APT_bysh23
+        owner: Sirherobrine23
+        tree: master
+        suite: main
+        path:
+          - /package/main
+          - path: /package/not-bysh23
+            suite: not_by_sirherobrine
