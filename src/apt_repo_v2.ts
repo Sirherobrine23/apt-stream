@@ -1,12 +1,12 @@
 import { DebianPackage, httpRequestGithub, httpRequest, DockerRegistry } from "@sirherobrine23/coreutils";
 import { getConfig, distManegerPackages } from "./repoConfig.js";
+import { watchFile } from "node:fs";
 import { Readable } from "node:stream";
 import { CronJob } from "cron";
-import { watchFile } from "node:fs";
+import { format } from "node:util";
 import express from "express";
 import openpgp from "openpgp";
 import tar from "tar";
-import { format } from "node:util";
 import path from "node:path";
 
 export default async function main(configPath: string) {
@@ -288,7 +288,7 @@ export default async function main(configPath: string) {
           });
         } else if (repository.from === "github_release") {
           if (repository.tags) {
-            const release = await Promise.all(repository.tags.map(async releaseTag => httpRequestGithub.GithubRelease({
+            const release = await Promise.all(repository.tags.map(async releaseTag => httpRequestGithub.getRelease({
               owner: repository.owner,
               repository: repository.repository,
               token: repository.token,
@@ -305,7 +305,7 @@ export default async function main(configPath: string) {
               });
             })))).then(data => data.flat(2).filter(Boolean));
           }
-          const release = await httpRequestGithub.GithubRelease({owner: repository.owner, repository: repository.repository, token: repository.token, peer: repository.assetsLimit, all: false});
+          const release = await httpRequestGithub.getRelease({owner: repository.owner, repository: repository.repository, token: repository.token, peer: repository.assetsLimit, all: false});
           return Promise.all(release.map(async release => Promise.all(release.assets.map(async ({browser_download_url, name}) => {
             if (!name.endsWith(".deb")) return null;
             const getStream = () => httpRequest.pipeFetch(browser_download_url);
@@ -338,6 +338,10 @@ export default async function main(configPath: string) {
               getStream,
             });
           }));
+        } else if (repository.from === "google_drive") {
+
+        } else if (repository.from === "oracle_bucket") {
+
         }
         console.log("%s not registred to manipulate package", repository.from);
         return null;
