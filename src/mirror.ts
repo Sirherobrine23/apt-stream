@@ -1,7 +1,7 @@
 import { httpRequest, DebianPackage } from "@sirherobrine23/coreutils";
+import { promisify } from "node:util";
 import openpgp from "openpgp";
 import zlib from "node:zlib";
-import { promisify } from "node:util";
 
 export async function getRelease(uri: string, options: {dist: string}) {
   let Release = (await httpRequest.bufferFetch(`${uri}/dists/${options.dist}/InRelease`).catch(() => httpRequest.bufferFetch(`${uri}/dists/${options.dist}/Release`))).data.toString("utf8").trim();
