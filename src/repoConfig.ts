@@ -1,11 +1,11 @@
-import coreUtils, { DockerRegistry, extendsCrypto } from "@sirherobrine23/coreutils";
-import { debianControl } from "@sirherobrine23/coreutils/src/deb.js";
-import { Readable, Writable } from "node:stream";
-import { createGzip } from "node:zlib";
+import coreUtils, { DockerRegistry, extendFs, extendsCrypto } from "@sirherobrine23/coreutils";
 import { Compressor as lzmaCompressor } from "lzma-native";
+import { Readable, Writable } from "node:stream";
+import { debianControl } from "@sirherobrine23/coreutils/src/deb.js";
+import { createGzip } from "node:zlib";
 import yaml from "yaml";
-import fs from "node:fs/promises";
 import path from "node:path";
+import fs from "node:fs/promises";
 
 export type apt_config = {
   origin?: string,
@@ -74,7 +74,8 @@ export type repository = ({
 export type backendConfig = Partial<{
   "apt-config"?: apt_config & {
     portListen?: number,
-    rootPath?: string,
+    poolPath?: string,
+    saveFiles?: boolean,
     pgpKey?: {
       private: string,
       public: string,
@@ -97,7 +98,31 @@ export async function getConfig(filePath: string) {
   if (!await coreUtils.extendFs.exists(filePath)) throw new Error("config File not exists");
   const fixedConfig: backendConfig = {};
   const configData: backendConfig = yaml.parse(await fs.readFile(filePath, "utf8"));
-  fixedConfig["apt-config"] = configData["apt-config"] ?? {enableHash: true, label: "apt-stream"};
+  fixedConfig["apt-config"] = {};
+  if (configData["apt-config"]) {
+    const rootData = configData["apt-config"];
+    fixedConfig["apt-config"].portListen = rootData.portListen ?? 3000;
+    fixedConfig["apt-config"].poolPath = rootData.poolPath ?? path.join(process.cwd(), "apt-stream");
+    fixedConfig["apt-config"].saveFiles = rootData.saveFiles ?? false;
+    if (fixedConfig["apt-config"].poolPath && !await extendFs.exists(fixedConfig["apt-config"].poolPath)) await fs.mkdir(fixedConfig["apt-config"].poolPath, {recursive: true});
+    if (rootData.codename) fixedConfig["apt-config"].codename = rootData.codename;
+    if (rootData.origin) fixedConfig["apt-config"].origin = rootData.origin;
+    if (rootData.label) fixedConfig["apt-config"].label = rootData.label;
+    if (rootData.enableHash) fixedConfig["apt-config"].enableHash = rootData.enableHash;
+    if (rootData.sourcesHost) fixedConfig["apt-config"].sourcesHost = rootData.sourcesHost;
+    if (rootData.pgpKey) {
+      if (!(rootData.pgpKey.private && rootData.pgpKey.public)) throw new Error("pgpKey not defined");
+      const privateKey = rootData.pgpKey.private.startsWith("---") ? rootData.pgpKey.private : await fs.readFile(path.resolve(rootData.pgpKey.private), "utf8");
+      const publicKey = rootData.pgpKey.public.startsWith("---") ? rootData.pgpKey.public : await fs.readFile(path.resolve(rootData.pgpKey.public), "utf8");
+      let passphrase = rootData.pgpKey.passphrase;
+      if (!passphrase) passphrase = undefined
+      fixedConfig["apt-config"].pgpKey = {
+        private: privateKey,
+        public: publicKey,
+        passphrase
+      };
+    }
+  }
   if (fixedConfig["apt-config"].pgpKey) {
     const pgpKey = fixedConfig["apt-config"].pgpKey;
     if (!pgpKey.private.startsWith("---")) fixedConfig["apt-config"].pgpKey.private = await fs.readFile(path.resolve(path.dirname(filePath), pgpKey.private), "utf8");
@@ -324,7 +349,7 @@ export class distManegerPackages {
     return Promise.resolve(packageData.getStream()).then(stream => ({control: packageData.control, repository: packageData.repositoryConfig, stream}));
   }
 
-  public async createPackages(options?: {compress?: "gzip" | "xz", writeStream?: Writable, dist?: string, package?: string, arch?: string, suite?: string}) {
+  public async createPackages(options?: {compress?: "gzip" | "xz", writeStream?: Writable, singlePackages?: boolean, dist?: string, package?: string, arch?: string, suite?: string}) {
     const distribuition = this.distribuitions;
     const rawWrite = new Readable({read(){}});
     let size = 0, addbreak = false, hash: ReturnType<typeof extendsCrypto.createHashAsync>|undefined;
@@ -361,6 +386,7 @@ export class distManegerPackages {
             control["Filename"] = `pool/${dist}/${suite}/${control.Package}/${arch}/${control.Version}/download.deb`;
             const Data = Object.keys(control).map(key => `${key}: ${control[key]}`);
             rawWrite.push(Data.join("\n"));
+            if (options?.singlePackages) break;
           }
         }
       }

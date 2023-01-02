@@ -1,6 +1,7 @@
 apt-config:
   portListen: 3000
   enableHash: true
+  saveFiles: true
   pgpKey:
     private: ./private.key
     public: ./public.key

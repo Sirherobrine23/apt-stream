@@ -1,6 +1,6 @@
-import { DebianPackage, httpRequestGithub, httpRequest, DockerRegistry } from "@sirherobrine23/coreutils";
+import { DebianPackage, httpRequestGithub, httpRequest, DockerRegistry, extendFs } from "@sirherobrine23/coreutils";
 import { getConfig, distManegerPackages } from "./repoConfig.js";
-import { watchFile } from "node:fs";
+import { createReadStream, createWriteStream, watchFile, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
 import { CronJob } from "cron";
 import { format } from "node:util";
@@ -254,6 +254,8 @@ export default async function main(configPath: string) {
   // Loading and update packages
   const cronJobs: CronJob[] = [];
   const waitPromises: Promise<void>[] = [];
+  const saveFile = repositoryConfig["apt-config"]?.saveFiles;
+  const rootPool = repositoryConfig["apt-config"]?.poolPath;
   for (const dist in repositoryConfig.repositories) {
     const targets = repositoryConfig.repositories[dist].targets;
     for (const repository of targets) {
@@ -271,11 +273,18 @@ export default async function main(configPath: string) {
                   repositoryConfig: repository,
                   control,
                   async getStream() {
+                    const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
+                    if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
                     return new Promise<Readable>((done, reject) => registry.blobLayerStream(data.layer.digest).then(stream => {
                       stream.on("error", reject);
                       stream.pipe(tar.list({
-                        onentry(getEntry) {
+                        async onentry(getEntry) {
                           if (getEntry.path !== entry.path) return null;
+                          if (saveFile) {
+                            const mainPath = path.resolve(filePool, "..");
+                            if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
+                            entry.pipe(createWriteStream(filePool));
+                          }
                           return done(getEntry as any);
                         }
                       // @ts-ignore
@@ -296,8 +305,19 @@ export default async function main(configPath: string) {
             })));
             return Promise.all(release.map(async release => Promise.all(release.assets.map(async ({browser_download_url, name}) => {
               if (!name.endsWith(".deb")) return null;
-              const getStream = () => httpRequest.pipeFetch(browser_download_url);
-              const control = await DebianPackage.extractControl(await getStream());
+              const control = await DebianPackage.extractControl(await httpRequest.pipeFetch(browser_download_url));
+              const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
+              const getStream = async () => {
+                if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
+                if (saveFile) {
+                  const mainPath = path.resolve(filePool, "..");
+                  if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
+                  const fileStream = await httpRequest.pipeFetch(browser_download_url);
+                  fileStream.pipe(createWriteStream(filePool));
+                  return fileStream;
+                }
+                return httpRequest.pipeFetch(browser_download_url);
+              }
               return packInfos.addPackage(dist, repository.suite ?? release.tag_name, {
                 repositoryConfig: repository,
                 control,
@@ -308,8 +328,19 @@ export default async function main(configPath: string) {
           const release = await httpRequestGithub.getRelease({owner: repository.owner, repository: repository.repository, token: repository.token, peer: repository.assetsLimit, all: false});
           return Promise.all(release.map(async release => Promise.all(release.assets.map(async ({browser_download_url, name}) => {
             if (!name.endsWith(".deb")) return null;
-            const getStream = () => httpRequest.pipeFetch(browser_download_url);
-            const control = await DebianPackage.extractControl(await getStream());
+            const control = await DebianPackage.extractControl(await httpRequest.pipeFetch(browser_download_url));
+            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
+            const getStream = async () => {
+              if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
+              if (saveFile) {
+                const mainPath = path.resolve(filePool, "..");
+                if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
+                const fileStream = await httpRequest.pipeFetch(browser_download_url);
+                fileStream.pipe(createWriteStream(filePool));
+                return fileStream;
+              }
+              return httpRequest.pipeFetch(browser_download_url);
+            }
             return packInfos.addPackage(dist, repository.suite ?? release.tag_name, {
               repositoryConfig: repository,
               control,
@@ -329,9 +360,21 @@ export default async function main(configPath: string) {
             });
             return true;
           }).filter(({path, type}) => path.endsWith(".deb") && type === "blob");
-          return Promise.all(filtedTree.map(async ({path}) => {
-            const getStream = () => httpRequest.pipeFetch(`https://raw.githubusercontent.com/${repository.owner}/${repository.repository}/${repository.tree}/${path}`);
-            const control = await DebianPackage.extractControl(await getStream());
+          return Promise.all(filtedTree.map(async ({path: filePath}) => {
+            const downloadUrl = `https://raw.githubusercontent.com/${repository.owner}/${repository.repository}/${repository.tree}/${filePath}`;
+            const control = await DebianPackage.extractControl(await httpRequest.pipeFetch(downloadUrl));
+            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
+            const getStream = async () => {
+              if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
+              if (saveFile) {
+                const mainPath = path.resolve(filePool, "..");
+                if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
+                const fileStream = await httpRequest.pipeFetch(downloadUrl);
+                fileStream.pipe(createWriteStream(filePool));
+                return fileStream;
+              }
+              return httpRequest.pipeFetch(downloadUrl);
+            }
             return packInfos.addPackage(dist, repository.suite ?? repository.tree, {
               repositoryConfig: repository,
               control,
@@ -339,7 +382,7 @@ export default async function main(configPath: string) {
             });
           }));
         } else if (repository.from === "google_drive") {
-
+          
         } else if (repository.from === "oracle_bucket") {
 
         }
