@@ -1,4 +1,4 @@
-import { DebianPackage, httpRequestGithub, httpRequest, DockerRegistry, extendFs } from "@sirherobrine23/coreutils";
+import coreUtils, { DebianPackage, httpRequestGithub, httpRequest, DockerRegistry, extendFs } from "@sirherobrine23/coreutils";
 import { getConfig, distManegerPackages } from "./repoConfig.js";
 import { createReadStream, createWriteStream, watchFile, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
@@ -375,16 +375,66 @@ export default async function main(configPath: string) {
               }
               return httpRequest.pipeFetch(downloadUrl);
             }
-            return packInfos.addPackage(dist, repository.suite ?? repository.tree, {
+            return packInfos.addPackage(dist, repository.suite ?? "main", {
               repositoryConfig: repository,
               control,
               getStream,
             });
           }));
         } else if (repository.from === "google_drive") {
-          
+          const client_id = repository.appSettings.client_id;
+          const client_secret = repository.appSettings.client_secret;
+          const token = repository.appSettings.token;
+          const googleDriver = await coreUtils.googleDriver.GoogleDriver(client_id, client_secret, {
+            token,
+            async authCallback(url, token) {
+              if (url) console.log("Please visit this url to auth google driver: %s", url);
+              else console.log("Google driver auth success, please save token to config file, token: %s", token);
+            },
+          });
+          const files = (repository.folderId ? (await Promise.all(repository.folderId.map(async folderId => await googleDriver.listFiles(folderId)))).flat() : await googleDriver.listFiles());
+          return Promise.all(files.filter(({name, isTrashedFile}) => !isTrashedFile && name.endsWith(".deb")).map(async fileData => {
+            const control = await DebianPackage.extractControl(await googleDriver.getFileStream(fileData.id));
+            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
+            const getStream = async () => {
+              if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
+              if (saveFile) {
+                const mainPath = path.resolve(filePool, "..");
+                if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
+                const fileStream = await googleDriver.getFileStream(fileData.id);
+                fileStream.pipe(createWriteStream(filePool));
+                return fileStream;
+              }
+              return googleDriver.getFileStream(fileData.id);
+            }
+            return packInfos.addPackage(dist, repository.suite ?? "main", {
+              repositoryConfig: repository,
+              control,
+              getStream,
+            });
+          }));
         } else if (repository.from === "oracle_bucket") {
-
+          const oracleBucket = await coreUtils.oracleBucket(repository.region as any, repository.bucketName, repository.bucketNamespace, repository.auth);
+          return Promise.all((await oracleBucket.fileList()).filter(({name}) => name.endsWith(".deb")).map(async fileData => {
+            const control = await DebianPackage.extractControl(await oracleBucket.getFileStream(fileData.name));
+            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
+            const getStream = async () => {
+              if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
+              if (saveFile) {
+                const mainPath = path.resolve(filePool, "..");
+                if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
+                const fileStream = await oracleBucket.getFileStream(fileData.name);
+                fileStream.pipe(createWriteStream(filePool));
+                return fileStream;
+              }
+              return oracleBucket.getFileStream(fileData.name);
+            }
+            return packInfos.addPackage(dist, repository.suite ?? "main", {
+              repositoryConfig: repository,
+              control,
+              getStream,
+            });
+          }));
         }
         console.log("%s not registred to manipulate package", repository.from);
         return null;

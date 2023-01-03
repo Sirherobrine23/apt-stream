@@ -55,7 +55,7 @@ export type repository = ({
   bucketNamespace: string,
   region: string,
   auth?: any,
-  path?: string[],
+  folders?: string[],
 }|{
   from: "google_drive",
   appSettings: {
@@ -195,8 +195,16 @@ export async function getConfig(filePath: string) {
         });
       } else if (target.from === "oracle_bucket") {
         if (!(target.bucketName && target.bucketNamespace && target.region)) throw new Error("oracle_bucket bucket not defined");
-        const oracleData: repository = {from: "oracle_bucket", bucketName: target.bucketName, bucketNamespace: target.bucketNamespace, region: target.region};
+        const oracleData: repository = {
+          from: "oracle_bucket",
+          bucketName: target.bucketName,
+          bucketNamespace: target.bucketNamespace,
+          region: target.region,
+        };
+
+        if (target.folders) oracleData.folders = target.folders;
         if (target.auth) oracleData.auth = target.auth;
+
         if (target.cronRefresh) oracleData.cronRefresh = target.cronRefresh;
         fixedConfig.repositories[distribuition].targets.push({
           ...oracleData,
