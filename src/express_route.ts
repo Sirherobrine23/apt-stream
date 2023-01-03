@@ -1,6 +1,7 @@
 import coreUtils, { DebianPackage, httpRequestGithub, httpRequest, DockerRegistry, extendFs } from "@sirherobrine23/coreutils";
 import { getConfig, distManegerPackages } from "./repoConfig.js";
 import { createReadStream, createWriteStream, watchFile, promises as fs } from "node:fs";
+import { getPackages } from "./mirror.js";
 import { Readable } from "node:stream";
 import { CronJob } from "cron";
 import { format } from "node:util";
@@ -260,7 +261,14 @@ export default async function main(configPath: string) {
     const targets = repositoryConfig.repositories[dist].targets;
     for (const repository of targets) {
       const update = async () => {
-        if (repository.from === "oci") {
+        if (repository.from === "mirror") {
+          return Promise.all(Object.keys(repository.dists).map(async dist => {
+            const distInfo = repository.dists[dist];
+            const packagesData = distInfo.suites ? await Promise.all(distInfo.suites.map(async suite => getPackages(repository.uri, {dist, suite}))).then(U => U.flat()) : await getPackages(repository.uri, {dist});
+            console.log(packagesData);
+            return packagesData;
+          }));
+        } else if (repository.from === "oci") {
           const registry = await DockerRegistry.Manifest.Manifest(repository.image, repository.platfom_target);
           return registry.layersStream((data) => {
             if (!(["gzip", "gz", "tar"]).some(ends => data.layer.mediaType.endsWith(ends))) return data.next();
@@ -436,7 +444,6 @@ export default async function main(configPath: string) {
             });
           }));
         }
-        console.log("%s not registred to manipulate package", repository.from);
         return null;
       }
       waitPromises.push(update().then(() => {

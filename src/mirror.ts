@@ -1,7 +1,8 @@
 import { httpRequest, DebianPackage } from "@sirherobrine23/coreutils";
-import { promisify } from "node:util";
-import openpgp from "openpgp";
+import { Decompressor as lzmaDecompressor } from "lzma-native";
+import { Writable } from "node:stream";
 import zlib from "node:zlib";
+import openpgp from "openpgp";
 
 export async function getRelease(uri: string, options: {dist: string}) {
   let Release = (await httpRequest.bufferFetch(`${uri}/dists/${options.dist}/InRelease`).catch(() => httpRequest.bufferFetch(`${uri}/dists/${options.dist}/Release`))).data.toString("utf8").trim();
@@ -76,27 +77,45 @@ export async function getRelease(uri: string, options: {dist: string}) {
   };
 }
 
-export async function getPackages(uri: string, options: {dist: string}) {
+export async function getPackages(uri: string, options: {dist: string, suite?: string}) {
   const Release = await getRelease(uri, options);
   if (Release["Acquire-By-Hash"]) {
     if (Release.SHA256) {
       const files = Release.SHA256.filter((v) => /Packages(\.gz|\.xz)?/.test(v.name));
       if (files.length === 0) throw new Error("No Packages file found");
-      const dataArray: any[] = [];
+      const dataArray: DebianPackage.debianControl[] = [];
       for (const file of files) {
-        try {
-          const data = (await (file.name.endsWith("Packages") ? (httpRequest.bufferFetch(`${uri}/dists/${options.dist}/${file.name}`)).then(({data}) => data) : file.name.endsWith(".gz") ? promisify(zlib.gunzip)((await httpRequest.bufferFetch(`${uri}/dists/${options.dist}/${file.name}`)).data) : Promise.resolve(""))).toString();
-          if (data) {
-            dataArray.push({
-              file: `${uri}/dists/${options.dist}/${file.name}`,
-              Packages: data.split(/^\n/gm).map((v) => {
-                const U = DebianPackage.parseControlFile(v);
-                U.Filename = `${uri}/${U.Filename}`;
-                return U;
-              })
-            });
-          }
-        } catch {}
+        const urlRequest = `${uri}/dists/${options.dist}/${file.name}`;
+        await new Promise<void>(async (done, reject) => {
+          const stream = (urlRequest.endsWith(".gz")||urlRequest.endsWith(".xz")) ? (await httpRequest.pipeFetch(urlRequest)).pipe(urlRequest.endsWith(".gz") ? zlib.createGunzip() : lzmaDecompressor()) : await httpRequest.pipeFetch(urlRequest);
+          stream.on("error", (err: any) => {
+            try {
+              reject(new httpRequest.responseError(err));
+            } catch (e) {
+              reject(err);
+            }
+          });
+          let data = "";
+          stream.pipe(new Writable({
+            final(callback) {
+              done();
+              callback();
+            },
+            write(chunkR, encoding, callback) {
+              let chuck: string = data + (encoding === "binary" ? chunkR.toString("utf8") : Buffer.from(chunkR).toString("utf8"));
+              if (/^\n/.test(chuck)) {
+                chuck.split(/^\n/gm).forEach((v) => {
+                  if (v.trim() === "") return;
+                  chuck = chuck.replace(v, "").trim();
+                  const debianControl = DebianPackage.parseControlFile(v);
+                  dataArray.push(debianControl);
+                });
+              }
+              data = chuck.trim();
+              callback();
+            }
+          }));
+        }).catch(console.error);
       }
       return dataArray;
     }
@@ -104,4 +123,4 @@ export async function getPackages(uri: string, options: {dist: string}) {
   return null;
 }
 
-getPackages("http://deb.debian.org/debian", {dist: "stable"}).catch(console.error).then(console.log);
+getPackages("http://deb.debian.org/debian", {dist: "stable"}).then((v) => console.log(v)).catch((e) => console.error(e));
