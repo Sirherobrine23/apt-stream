@@ -6,6 +6,14 @@ apt-config:
     private: ./private.key
     public: ./public.key
 repositories:
+  nodejs:
+    targets:
+    - from: mirror
+      uri: https://deb.nodesource.com/node_19.x
+      dists:
+        bullseye:
+          suites:
+          - main
   github:
     apt-config: {}
     targets:

@@ -77,50 +77,80 @@ export async function getRelease(uri: string, options: {dist: string}) {
   };
 }
 
-export async function getPackages(uri: string, options: {dist: string, suite?: string}) {
+export async function getPackages(uri: string, options: {dist: string, suite?: string}): Promise<{file: string, Package: DebianPackage.debianControl}[]> {
   const Release = await getRelease(uri, options);
-  if (Release["Acquire-By-Hash"]) {
-    if (Release.SHA256) {
-      const files = Release.SHA256.filter((v) => /Packages(\.gz|\.xz)?/.test(v.name));
-      if (files.length === 0) throw new Error("No Packages file found");
-      const dataArray: DebianPackage.debianControl[] = [];
-      for (const file of files) {
-        const urlRequest = `${uri}/dists/${options.dist}/${file.name}`;
-        await new Promise<void>(async (done, reject) => {
-          const stream = (urlRequest.endsWith(".gz")||urlRequest.endsWith(".xz")) ? (await httpRequest.pipeFetch(urlRequest)).pipe(urlRequest.endsWith(".gz") ? zlib.createGunzip() : lzmaDecompressor()) : await httpRequest.pipeFetch(urlRequest);
-          stream.on("error", (err: any) => {
-            try {
-              reject(new httpRequest.responseError(err));
-            } catch (e) {
-              reject(err);
+  const hashs: {file: string, Package: DebianPackage.debianControl}[] = [];
+  async function addPackages(dist: string, file: string, fn?: (data: DebianPackage.debianControl) => void) {
+    const urlRequest = `${uri}/dists/${dist}/${file}`;
+    console.log(`Requesting ${urlRequest}`);
+    await new Promise<void>(async (done, reject) => {
+      const stream = (urlRequest.endsWith(".gz")||urlRequest.endsWith(".xz")) ? (await httpRequest.pipeFetch(urlRequest)).pipe(urlRequest.endsWith(".gz") ? zlib.createGunzip() : lzmaDecompressor()) : await httpRequest.pipeFetch(urlRequest);
+      stream.on("error", (err: any) => {
+        try {
+          reject(new httpRequest.responseError(err));
+        } catch (e) {
+          reject(err);
+        }
+      });
+      let data = "";
+      stream.pipe(new Writable({
+        final(callback) {
+          done();
+          callback();
+        },
+        write(chunkR, encoding, callback) {
+          data = data + (encoding === "binary" ? chunkR.toString("utf8") : Buffer.from(chunkR).toString("utf8"));
+          data.split(/^\n/).forEach((v) => {
+            if (v.trim()) {
+              data = data.replace(v, "");
+              const control = DebianPackage.parseControlFile(v.trim());
+              control.Filename = `${uri}/${control.Filename}`;
+              if (fn) fn(control);
             }
           });
-          let data = "";
-          stream.pipe(new Writable({
-            final(callback) {
-              done();
-              callback();
-            },
-            write(chunkR, encoding, callback) {
-              let chuck: string = data + (encoding === "binary" ? chunkR.toString("utf8") : Buffer.from(chunkR).toString("utf8"));
-              if (/^\n/.test(chuck)) {
-                chuck.split(/^\n/gm).forEach((v) => {
-                  if (v.trim() === "") return;
-                  chuck = chuck.replace(v, "").trim();
-                  const debianControl = DebianPackage.parseControlFile(v);
-                  dataArray.push(debianControl);
-                });
-              }
-              data = chuck.trim();
-              callback();
-            }
-          }));
-        }).catch(console.error);
-      }
-      return dataArray;
-    }
+          callback();
+        }
+      }));
+    }).catch(() => {});
   }
-  return null;
+  if (Release.SHA512) {
+    const files = Release.SHA512.filter((v) => /Packages(\.gz|\.xz)?/.test(v.name));
+    if (files.length === 0) throw new Error("No Packages file found");
+    for (const file of files) await addPackages(options.dist, file.name, data => {
+      if (!(data.Package && data.Version && data.Architecture)) return;
+      if (hashs.find((v) => v.Package.Package === data.Package && v.Package.Version === data.Version && v.Package.Architecture === data.Architecture)) return;
+      hashs.push({file: file.name, Package: data});
+    });
+  } else if (Release.SHA256) {
+    const files = Release.SHA256.filter((v) => /Packages(\.gz|\.xz)?/.test(v.name));
+    if (files.length === 0) throw new Error("No Packages file found");
+    for (const file of files) await addPackages(options.dist, file.name, data => {
+      if (!(data.Package && data.Version && data.Architecture)) return;
+      if (hashs.find((v) => v.Package.Package === data.Package && v.Package.Version === data.Version && v.Package.Architecture === data.Architecture)) return;
+      hashs.push({file: file.name, Package: data});
+    });
+  } else if (Release.MD5Sum) {
+    const files = Release.MD5Sum.filter((v) => /Packages(\.gz|\.xz)?/.test(v.name));
+    if (files.length === 0) throw new Error("No Packages file found");
+    for (const file of files) await addPackages(options.dist, file.name, data => {
+      if (!(data.Package && data.Version && data.Architecture)) return;
+      if (hashs.find((v) => v.Package.Package === data.Package && v.Package.Version === data.Version && v.Package.Architecture === data.Architecture)) return;
+      hashs.push({file: file.name, Package: data});
+    });
+  } else {
+    const filesTest: string[] = [];
+    const Components = Release.Components ?? ["main"];
+    const archs = Release.Architectures ?? ["amd64"];
+    Components.forEach((v) => archs.forEach((v2) => {
+      filesTest.push(`dists/${options.dist}/${v}/binary-${v2}/Packages`);
+      filesTest.push(`dists/${options.dist}/${v}/binary-${v2}/Packages.gz`);
+      filesTest.push(`dists/${options.dist}/${v}/binary-${v2}/Packages.xz`);
+    }));
+    for (const file of filesTest) await addPackages(options.dist, file, data => {
+      if (!(data.Package && data.Version && data.Architecture)) return;
+      if (hashs.find((v) => v.Package.Package === data.Package && v.Package.Version === data.Version && v.Package.Architecture === data.Architecture)) return;
+      hashs.push({file, Package: data});
+    });
+  }
+  return hashs;
 }
-
-getPackages("http://deb.debian.org/debian", {dist: "stable"}).then((v) => console.log(v)).catch((e) => console.error(e));

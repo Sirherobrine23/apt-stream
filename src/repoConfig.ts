@@ -1,4 +1,4 @@
-import coreUtils, { DockerRegistry, extendFs, extendsCrypto } from "@sirherobrine23/coreutils";
+import coreUtils, { DebianPackage, DockerRegistry, extendFs, extendsCrypto } from "@sirherobrine23/coreutils";
 import { Compressor as lzmaCompressor } from "lzma-native";
 import { Readable, Writable } from "node:stream";
 import { debianControl } from "@sirherobrine23/coreutils/src/deb.js";
@@ -6,6 +6,7 @@ import { createGzip } from "node:zlib";
 import yaml from "yaml";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { format } from "node:util";
 
 export type apt_config = {
   origin?: string,
@@ -89,6 +90,10 @@ export type backendConfig = Partial<{
     }
   }
 }>;
+
+export function poolLocationPackage(dist: string, suite: string, arch: string, packageName: string, version: string) {
+  return format("pool/:dist/:suite/:arch/:packageName/:version/download.deb", dist, suite, arch, packageName, version);
+}
 
 export async function saveConfig(filePath: string, config: backendConfig) {
   await fs.writeFile(filePath, yaml.stringify(config));
@@ -301,51 +306,59 @@ export class distManegerPackages {
     return data;
   }
 
-  public getAllDistribuitions() {
-    return Object.keys(this.distribuitions).map(dist => this.getDistribuition(dist));
-  }
-
-  public getDistribuition(dist: string) {
-    if (!this.distribuitions[dist]) throw new Error("Distribuition not exists");
-    const suitesName = Object.keys(this.distribuitions[dist]);
-    const suite = suitesName.map(suite => {
-      const archs = Object.keys(this.distribuitions[dist][suite]);
-      const archsPackages: {[arch: string]: debianControl[]} = {};
-      archs.forEach(arch => archsPackages[arch] = this.distribuitions[dist][suite][arch].map(pkg => pkg.control));
+  public getDistribuition(distName: string) {
+    const dist = this.distribuitions[distName];
+    if (!dist) throw new Error("Distribuition not exists");
+    const suites = Object.keys(dist);
+    const suiteData = suites.map(suite => {
+      const Packages = Object.keys(dist[suite]).map(arch => dist[suite][arch].map(packageInfo => packageInfo.control)).flat();
       return {
-        suite,
-        archs,
-        archsPackages
+        Suite: suite,
+        Archs: Object.keys(dist[suite]),
+        Packages
       };
     });
+
     return {
-      distribuition: dist,
-      suitesName,
-      archs: [...new Set(suite.flatMap(pkg => pkg.archs))],
-      suite
+      dist: distName,
+      suites,
+      archs: [...(new Set(suiteData.map(suite => suite.Archs).flat()))],
+      suiteData,
     };
   }
 
-  public getPackageInfo(dist: string, suite?: string, arch?: string, packageName?: string, version?: string) {
-    const distData = this.distribuitions[dist];
-    if (!distData) throw new Error("Distribuition not exists");
-    if (!suite) return Object.keys(distData);
+  public getAllDistribuitions() {
+    return Object.keys(this.distribuitions).map(dist => this.getDistribuition(dist)).flat();
+  }
 
-    const suiteData = distData[suite];
-    if (!suiteData) throw new Error("Suite not exists");
-    if (!arch) return Object.keys(suiteData);
+  public getPackageInfo(info: {dist: string, suite?: string, arch?: string, packageName?: string, version?: string}) {
+    const packageDateObject: {[k: string]: {[l: string]: {[a: string]: DebianPackage.debianControl[]}}} = {};
+    for (const dist in this.distribuitions) {
+      if (info.dist && info.dist !== dist) continue;
+      packageDateObject[dist] = {};
+      for (const suite in this.distribuitions[dist]) {
+        if (info.suite && info.suite !== suite) continue;
+        packageDateObject[dist][suite] = {};
+        for (const arch in this.distribuitions[dist][suite]) {
+          if (info.arch && info.arch !== arch) continue;
+          packageDateObject[dist][suite][arch] = this.distribuitions[dist][suite][arch].map(pkg => pkg.control).filter(pkg => (!info.packageName || pkg.Package === info.packageName) && (!info.version || pkg.Version === info.version));
+        }
+      }
+    }
 
-    const archData = suiteData[arch];
-    if (!archData) throw new Error("Arch not exists");
-    if (!packageName) return archData.map(({control, getStream}) => ({control, getStream}));
-
-    const packageData = archData.filter(pkg => pkg.control.Package === packageName);
-    if (packageData.length === 0) throw new Error("Package not exists");
-    if (!version) return packageData.map(({control, getStream}) => ({control, getStream}));
-
-    const packageVersionData = packageData.find(pkg => pkg.control.Version === version);
-    if (!packageVersionData) throw new Error("Package version not exists");
-    return packageVersionData.control;
+    if (info.dist) {
+      const dist = packageDateObject[info.dist];
+      if (info.suite) {
+        const suite = dist[info.suite];
+        if (info.arch) {
+          const arch = suite[info.arch];
+          if (info.packageName) return arch.find(pkg => pkg.Package === info.packageName && (!info.version || pkg.Version === info.version));
+          return arch;
+        }
+      }
+      return dist;
+    }
+    return packageDateObject;
   }
 
   public async getPackageStream(distribuition: string, suite: string, arch: string, packageName: string, version: string) {
@@ -391,7 +404,7 @@ export class distManegerPackages {
             if (!(control.SHA1 || control.SHA256 || control.MD5sum)) continue;
             if (options?.package && options.package !== control.Package) continue;
             if (addbreak) rawWrite.push("\n\n"); else addbreak = true;
-            control["Filename"] = `pool/${dist}/${suite}/${control.Package}/${arch}/${control.Version}/download.deb`;
+            control["Filename"] = poolLocationPackage(dist, suite, arch, control.Package, control.Version);
             const Data = Object.keys(control).map(key => `${key}: ${control[key]}`);
             rawWrite.push(Data.join("\n"));
             if (options?.singlePackages) break;

@@ -23,7 +23,7 @@ export default async function main(configPath: string) {
   });
 
   // Public key
-  app.get("/public_key", async ({res}) => {
+  app.get(["/public_key", "/public.gpg"], async ({res}) => {
     const Key = repositoryConfig["apt-config"]?.pgpKey;
     if (!Key) return res.status(400).json({error: "This repository no sign Packages files"});
     const pubKey = (await openpgp.readKey({ armoredKey: Key.public })).armor();
@@ -37,38 +37,25 @@ export default async function main(configPath: string) {
     const concatPackage = packInfos.getAllDistribuitions();
     const type = req.query.type ?? req.query.t;
     const Conflicting = !!(req.query.conflicting ?? req.query.c);
-    if (type === "deb822") {
-      const data = concatPackage.map(({distribuition, suitesName: suites}) => format("Types: deb\nURIs: %s\nSuites: %s\nComponents: %s", host, distribuition, (suites ?? ["main"]).join(" ")));
-      return res.setHeader("Content-Type", "text/plain").send(data.join("\n"));
-    } else if (type === "json") {
+    if (type === "json") {
       return res.json({
         host,
-        distribuitions: concatPackage.map(({distribuition, suitesName: suites}) => ({
-          distribuition,
-          suites: suites ?? ["main"],
-        }))
+        distribuitions: concatPackage
       });
-    }
-    return res.setHeader("Content-Type", "text/plain").send(concatPackage.map(({distribuition, suitesName: suites}) => `deb ${host} ${Conflicting?"./":""}${distribuition} ${(suites ?? ["main"]).join(" ")}`).join("\n"));
+    } else if (type === "deb822") {}
+    let sourcesList = "";
+    concatPackage.forEach((dist) => sourcesList += format("deb %s %s %s\n", host, (Conflicting ? "./" : "")+dist.dist, dist.suites.join(" ")));
+    return res.status(200).setHeader("Content-Type", "text/plain").send(sourcesList);
   });
 
   // Download
-  app.get("/pool/:dist/:suite/:packageName/:arch/:version/download.deb", async (req, res) => {
-    const {dist, suite, packageName, arch, version} = req.params;
-    return packInfos.getPackageStream(dist, suite, arch, packageName, version).then(({stream, control}) => stream.pipe(res.writeHead(200, {
-      "Content-Type": "application/vnd.debian.binary-package",
-      "Content-Length": control.Size,
-      "Content-MD5": control.MD5sum,
-      "Content-SHA1": control.SHA1,
-      "Content-SHA256": control.SHA256,
-    })));
-  });
-  app.get("/pool/:dist/:suite/:packageName/:arch/:version", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist, req.params.suite, req.params.arch, req.params.packageName, req.params.version)));
-  app.get("/pool/:dist/:suite/:packageName/:arch", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist, req.params.suite, req.params.arch, req.params.packageName)));
-  app.get("/pool/:dist/:suite/:packageName", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist, req.params.suite, req.params.packageName)));
-  app.get("/pool/:dist/:suite", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist, req.params.suite)));
-  app.get("/pool/:dist", (req, res) => res.json(packInfos.getPackageInfo(req.params.dist)));
   app.get(["/pool", "/"], (_req, res) => res.json(packInfos.getAllDistribuitions()));
+  app.get("/pool/:dist", (req, res) => res.json(packInfos.getDistribuition(req.params.dist)));
+  app.get("/pool/:dist/:suite", ({params: {dist, suite}}, res) => res.json(packInfos.getPackageInfo({dist, suite})));
+  app.get("/pool/:dist/:suite/:arch", ({params: {dist, suite, arch}}, res) => res.json(packInfos.getPackageInfo({dist, suite, arch})));
+  app.get("/pool/:dist/:suite/:arch/:packageName", ({params: {dist, suite, arch, packageName}}, res) => res.json(packInfos.getPackageInfo({dist, suite, arch, packageName})));
+  app.get("/pool/:dist/:suite/:arch/:packageName/:version", ({params: {dist, suite, arch, packageName, version}}, res) => res.json(packInfos.getPackageInfo({dist, suite, arch, packageName, version})));
+  app.get("/pool/:dist/:suite/:arch/:packageName/:version/download.deb", async ({params: {dist, suite, arch, packageName, version}}, res, next) => packInfos.getPackageStream(dist, suite, arch, packageName, version).then(data => data.stream.pipe(res.writeHead(200, {"Content-Type": "application/x-debian-package", "Content-Length": data.control.Size, "Content-Disposition": `attachment; filename="${packageName}_${version}_${arch}.deb"`, "SHA256_hash": data.control.SHA256, "MD5Sum_hash": data.control.MD5sum}))).catch(next));
 
   app.get("/dists/(./)?:dist/:suite/binary-:arch/Packages(.(xz|gz)|)", (req, res) => {
     if (req.path.endsWith(".gz")) {
@@ -107,7 +94,7 @@ export default async function main(configPath: string) {
 
   // Release
   async function createReleaseV1(dist: string) {
-    const { suitesName: suites, archs } = packInfos.getDistribuition(dist);
+    const { suites, archs } = packInfos.getDistribuition(dist);
     const distConfig = repositoryConfig.repositories[dist];
     if (!distConfig) throw new Error("Dist not found");
     const ReleaseLines = [];
@@ -253,7 +240,7 @@ export default async function main(configPath: string) {
   app.listen(repositoryConfig["apt-config"].portListen, function () {return console.log(`apt-repo listening at http://localhost:${this.address().port}`);});
 
   // Loading and update packages
-  const cronJobs: CronJob[] = [];
+  let cronJobs: CronJob[] = [];
   const waitPromises: Promise<void>[] = [];
   const saveFile = repositoryConfig["apt-config"]?.saveFiles;
   const rootPool = repositoryConfig["apt-config"]?.poolPath;
@@ -262,11 +249,24 @@ export default async function main(configPath: string) {
     for (const repository of targets) {
       const update = async () => {
         if (repository.from === "mirror") {
-          return Promise.all(Object.keys(repository.dists).map(async dist => {
-            const distInfo = repository.dists[dist];
-            const packagesData = distInfo.suites ? await Promise.all(distInfo.suites.map(async suite => getPackages(repository.uri, {dist, suite}))).then(U => U.flat()) : await getPackages(repository.uri, {dist});
-            console.log(packagesData);
-            return packagesData;
+          return Promise.all(Object.keys(repository.dists).map(async distName => {
+            const distInfo = repository.dists[distName];
+            const packagesData = distInfo.suites ? await Promise.all(distInfo.suites.map(async suite => getPackages(repository.uri, {dist: distName, suite}))).then(U => U.flat()) : await getPackages(repository.uri, {dist: distName});
+            return packagesData.forEach(({Package: control}) => {
+              const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
+              const getStream = async () => {
+                if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
+                if (saveFile) {
+                  const mainPath = path.resolve(filePool, "..");
+                  if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
+                  const fileStream = await httpRequest.pipeFetch(control.Filename);
+                  fileStream.pipe(createWriteStream(filePool));
+                  return fileStream;
+                }
+                return httpRequest.pipeFetch(control.Filename);
+              }
+              return packInfos.addPackage(dist, repository.suite ?? "main", {repositoryConfig: repository, control, getStream});
+            });
           }));
         } else if (repository.from === "oci") {
           const registry = await DockerRegistry.Manifest.Manifest(repository.image, repository.platfom_target);
@@ -326,11 +326,7 @@ export default async function main(configPath: string) {
                 }
                 return httpRequest.pipeFetch(browser_download_url);
               }
-              return packInfos.addPackage(dist, repository.suite ?? release.tag_name, {
-                repositoryConfig: repository,
-                control,
-                getStream,
-              });
+              return packInfos.addPackage(dist, repository.suite ?? release.tag_name, {repositoryConfig: repository, control, getStream});
             })))).then(data => data.flat(2).filter(Boolean));
           }
           const release = await httpRequestGithub.getRelease({owner: repository.owner, repository: repository.repository, token: repository.token, peer: repository.assetsLimit, all: false});
@@ -349,11 +345,7 @@ export default async function main(configPath: string) {
               }
               return httpRequest.pipeFetch(browser_download_url);
             }
-            return packInfos.addPackage(dist, repository.suite ?? release.tag_name, {
-              repositoryConfig: repository,
-              control,
-              getStream,
-            });
+            return packInfos.addPackage(dist, repository.suite ?? release.tag_name, {repositoryConfig: repository, control, getStream});
           })))).then(data => data.flat(2).filter(Boolean));
         } else if (repository.from === "github_tree") {
           const { tree } = await httpRequestGithub.githubTree(repository.owner, repository.repository, repository.tree);
@@ -383,11 +375,7 @@ export default async function main(configPath: string) {
               }
               return httpRequest.pipeFetch(downloadUrl);
             }
-            return packInfos.addPackage(dist, repository.suite ?? "main", {
-              repositoryConfig: repository,
-              control,
-              getStream,
-            });
+            return packInfos.addPackage(dist, repository.suite ?? "main", {repositoryConfig: repository, control, getStream});
           }));
         } else if (repository.from === "google_drive") {
           const client_id = repository.appSettings.client_id;
@@ -415,11 +403,7 @@ export default async function main(configPath: string) {
               }
               return googleDriver.getFileStream(fileData.id);
             }
-            return packInfos.addPackage(dist, repository.suite ?? "main", {
-              repositoryConfig: repository,
-              control,
-              getStream,
-            });
+            return packInfos.addPackage(dist, repository.suite ?? "main", {repositoryConfig: repository, control, getStream});
           }));
         } else if (repository.from === "oracle_bucket") {
           const oracleBucket = await coreUtils.oracleBucket(repository.region as any, repository.bucketName, repository.bucketNamespace, repository.auth);
@@ -437,11 +421,7 @@ export default async function main(configPath: string) {
               }
               return oracleBucket.getFileStream(fileData.name);
             }
-            return packInfos.addPackage(dist, repository.suite ?? "main", {
-              repositoryConfig: repository,
-              control,
-              getStream,
-            });
+            return packInfos.addPackage(dist, repository.suite ?? "main", {repositoryConfig: repository, control, getStream});
           }));
         }
         return null;
@@ -457,6 +437,8 @@ export default async function main(configPath: string) {
   watchFile(configPath, async () => {
     console.info("Config file changed, reloading config and update packages...");
     repositoryConfig = await getConfig(configPath);
+    cronJobs.forEach((cron) => cron.stop());
+    cronJobs = [];
   });
   // await Promise.all(waitPromises);
   return app;
