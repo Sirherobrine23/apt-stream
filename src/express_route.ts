@@ -11,15 +11,18 @@ import tar from "tar";
 import path from "node:path";
 
 export default async function main(configPath: string) {
+  // Load config
   const packInfos = new distManegerPackages()
   let repositoryConfig = await getConfig(configPath);
+
+  // Express app
   const app = express();
   app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({ extended: true })).use((req, res, next) => {
     res.json = (data) => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data, null, 2));
-    next();
     const requestInitial = Date.now();
     console.log("[%s]: Method: %s, From: %s, Path %s", requestInitial, req.method, req.ip, req.path);
     res.once("close", () => console.log("[%s]: Method: %s, From: %s, Path %s, Status: %s, Time: %sms", Date.now(), req.method, req.ip, req.path, res.statusCode, Date.now() - requestInitial));
+    next();
   });
 
   // Public key

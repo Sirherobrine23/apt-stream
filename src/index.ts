@@ -5,12 +5,16 @@ import openpgp from "openpgp";
 import yargs from "yargs";
 import path from "node:path";
 import repo from "./express_route.js";
+import yaml from "yaml";
 
 yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommands().alias("h", "help").option("cofig-path", {
   type: "string",
-  default: process.cwd()+"/repoconfig.yml",
+  default: path.join(process.cwd(), "repoconfig.yml"),
+  alias: "c",
+  demandOption: false,
+  description: "Default config path"
 }).command("config", "maneger basics configs", async yargs => {
-  return yargs.demandCommand().strictCommands().command("keys", "Generate PGP keys", async yargs => {
+  return yargs.demandCommand().strictCommands().command("pgp_keys", "Generate PGP keys", async yargs => {
     const options = yargs.option("passphrase", {
       type: "string",
       default: "",
@@ -21,11 +25,13 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
       default: "",
       alias: "n",
       demandOption: true,
+      description: "You name to register in PGP key"
     }).option("email", {
       type: "string",
       default: "",
       alias: "e",
       demandOption: true,
+      description: "You email to register in PGP key"
     }).parseSync();
 
     const config = await getConfig(options.cofigPath);
@@ -56,8 +62,38 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     console.log("Public Key:\n%s", keys.publicKey);
     await saveConfig(options.cofigPath, config);
     console.log("Config saved in '%s'", options.cofigPath);
+  }).command("convert_to_base64", "Convert config to base64 to export to env or backup", async yargs => {
+    const options = yargs.option("json", {
+      type: "boolean",
+      default: true,
+      alias: "j",
+      demandOption: false,
+      description: "Output as JSON",
+    }).option("yaml", {
+      type: "boolean",
+      default: false,
+      alias: "y",
+      demandOption: false,
+      description: "Output as YAML",
+    }).option("output", {
+      type: "string",
+      default: "",
+      alias: "o",
+      demandOption: false,
+      description: "Save to file",
+    }).parseSync();
+    const config = await getConfig(options.cofigPath);
+    const base64 = Buffer.from(options.json ? JSON.stringify(config) : yaml.stringify(config)).toString("base64");
+    if (options.output) return writeFile(options.output, base64).then(() => console.log("Saved to '%s'", options.output));
+    console.log("base64:%s", base64);
   });
 }).command("server", "Run HTTP serber", yargs => {
   const options = yargs.parseSync();
+  const envs = Object.keys(process.env).filter(key => key.startsWith("APT_STREAM")).map(envKey => {
+    const data = process.env[envKey];
+    if (data.startsWith("base64:")||data.startsWith("BASE64:")) return Buffer.from(data.slice(7), "base64").toString();
+    return data;
+  });
+  if (envs.length > 0) return Promise.all(envs.map(async env => repo(`env:${env}`)));
   return repo(options.cofigPath);
 }).parseAsync();

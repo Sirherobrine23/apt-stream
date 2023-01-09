@@ -5,3 +5,7 @@ thunder-tests
 # Ingore node folders
 node_modules/
 *.tgz
+
+# Typescript
+*.d.ts
+*.js

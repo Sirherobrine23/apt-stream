@@ -1,4 +1,4 @@
-import coreUtils, { DebianPackage, DockerRegistry, extendFs, extendsCrypto } from "@sirherobrine23/coreutils";
+import coreUtils, { DebianPackage, DockerRegistry, extendFs, extendsCrypto, httpRequest } from "@sirherobrine23/coreutils";
 import { Compressor as lzmaCompressor } from "lzma-native";
 import { Readable, Writable } from "node:stream";
 import { debianControl } from "@sirherobrine23/coreutils/src/deb.js";
@@ -99,10 +99,36 @@ export async function saveConfig(filePath: string, config: backendConfig) {
   await fs.writeFile(filePath, yaml.stringify(config));
 }
 
-export async function getConfig(filePath: string) {
-  if (!await coreUtils.extendFs.exists(filePath)) throw new Error("config File not exists");
+export async function getConfig(config: string) {
   const fixedConfig: backendConfig = {};
-  const configData: backendConfig = yaml.parse(await fs.readFile(filePath, "utf8"));
+  let configData: backendConfig, avaiableToDirname = true;
+  if (config.startsWith("http")) {
+    avaiableToDirname = false;
+    const data = (await httpRequest.bufferFetch(config)).data;
+    try {
+      configData = JSON.parse(data.toString());
+    } catch {
+      try {
+        configData = yaml.parse(data.toString());
+      } catch {
+        throw new Error("Invalid config file");
+      }
+    }
+  } else if (config.startsWith("env:")) {
+    avaiableToDirname = false;
+    try {
+      configData = JSON.parse(process.env[config.slice(4)]);
+    } catch {
+      try {
+        configData = yaml.parse(process.env[config.slice(4)]);
+      } catch {
+        throw new Error("Invalid config file in env, check is JSON or YAML file");
+      }
+    }
+  } else {
+    if (!await coreUtils.extendFs.exists(config)) throw new Error("config File not exists");
+    configData = yaml.parse(await fs.readFile(config, "utf8"));
+  }
   fixedConfig["apt-config"] = {};
   if (configData["apt-config"]) {
     const rootData = configData["apt-config"];
@@ -130,8 +156,15 @@ export async function getConfig(filePath: string) {
   }
   if (fixedConfig["apt-config"].pgpKey) {
     const pgpKey = fixedConfig["apt-config"].pgpKey;
-    if (!pgpKey.private.startsWith("---")) fixedConfig["apt-config"].pgpKey.private = await fs.readFile(path.resolve(path.dirname(filePath), pgpKey.private), "utf8");
-    if (!pgpKey.public.startsWith("---")) fixedConfig["apt-config"].pgpKey.public = await fs.readFile(path.resolve(path.dirname(filePath), pgpKey.public), "utf8");
+
+    if (!pgpKey.private.startsWith("---")) {
+      if (!avaiableToDirname) throw new Error("Cannot read private key from url or env");
+      fixedConfig["apt-config"].pgpKey.private = await fs.readFile(path.resolve(path.dirname(config), pgpKey.private), "utf8");
+    }
+    if (!pgpKey.public.startsWith("---")) {
+      if (!avaiableToDirname) throw new Error("Cannot read public key from url or env");
+      fixedConfig["apt-config"].pgpKey.public = await fs.readFile(path.resolve(path.dirname(config), pgpKey.public), "utf8");
+    }
   }
   fixedConfig.repositories = {};
   if (!configData.repositories) configData.repositories = {};
