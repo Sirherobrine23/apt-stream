@@ -92,7 +92,7 @@ export type backendConfig = Partial<{
 }>;
 
 export function poolLocationPackage(dist: string, suite: string, arch: string, packageName: string, version: string) {
-  return format("pool/:dist/:suite/:arch/:packageName/:version/download.deb", dist, suite, arch, packageName, version);
+  return format("pool/%s/%s/%s/%s/%s/download.deb", dist, suite, arch, packageName, version);
 }
 
 export async function saveConfig(filePath: string, config: backendConfig) {

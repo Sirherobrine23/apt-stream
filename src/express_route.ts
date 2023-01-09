@@ -129,7 +129,7 @@ export default async function main(configPath: string) {
 
     const createPackagesHash = distConfig["apt-config"]?.enableHash ?? repositoryConfig["apt-config"]?.enableHash ?? true;
     if (createPackagesHash) {
-      ReleaseLines.push("Acquire-By-Hash: yes");
+      ReleaseLines.push("Acquire-By-Hash: no");
       const hashs = (await Promise.all(archs.map(async arch => Promise.all(suites.map(async suite => {
         const [gzip, xz, raw] = await Promise.all([packInfos.createPackages({compress: "gzip", dist, arch, suite}), packInfos.createPackages({compress: "xz", dist, arch, suite}), packInfos.createPackages({dist, arch, suite})]);
         return {
