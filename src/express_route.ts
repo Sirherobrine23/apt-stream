@@ -12,8 +12,8 @@ import path from "node:path";
 
 export default async function main(configPath: string) {
   // Load config
-  const packInfos = new distManegerPackages()
   let repositoryConfig = await getConfig(configPath);
+  const packInfos = new distManegerPackages(repositoryConfig);
 
   // Express app
   const app = express();
@@ -34,12 +34,12 @@ export default async function main(configPath: string) {
   });
 
   // Sources list
-  app.get(["/source_list", "/sources.list"], (req, res) => {
+  app.get(["/source_list", "/sources.list"], async (req, res) => {
     const remotePath = path.posix.resolve(req.baseUrl + req.path, ".."),
       protocol = req.headers["x-forwarded-proto"] ?? req.protocol,
       hostname = process.env["RAILWAY_STATIC_URL"] ?? `${req.hostname}:${req.socket.localPort}`,
       host = repositoryConfig["apt-config"]?.sourcesHost ?? `${protocol}://${hostname}${remotePath}`,
-      concatPackage = packInfos.getAllDistribuitions(),
+      concatPackage = await packInfos.getAllDistribuitions(),
       type = req.query.type ?? req.query.t,
       Conflicting = !!(req.query.conflicting ?? req.query.c);
     if (type === "json") {
@@ -54,12 +54,12 @@ export default async function main(configPath: string) {
   });
 
   // Download
-  app.get(["/pool", "/"], (_req, res) => res.json(packInfos.getAllDistribuitions()));
-  app.get("/pool/:dist", (req, res) => res.json(packInfos.getDistribuition(req.params.dist)));
-  app.get("/pool/:dist/:suite", ({params: {dist, suite}}, res) => res.json(packInfos.getPackageInfo({dist, suite})));
-  app.get("/pool/:dist/:suite/:arch", ({params: {dist, suite, arch}}, res) => res.json(packInfos.getPackageInfo({dist, suite, arch})));
-  app.get("/pool/:dist/:suite/:arch/:packageName", ({params: {dist, suite, arch, packageName}}, res) => res.json(packInfos.getPackageInfo({dist, suite, arch, packageName})));
-  app.get("/pool/:dist/:suite/:arch/:packageName/:version", ({params: {dist, suite, arch, packageName, version}}, res) => res.json(packInfos.getPackageInfo({dist, suite, arch, packageName, version})));
+  app.get(["/pool", "/"], async (_req, res) => res.json(await packInfos.getAllDistribuitions()));
+  app.get("/pool/:dist", async (req, res) => res.json(await packInfos.getDistribuition(req.params.dist)));
+  app.get("/pool/:dist/:suite", async ({params: {dist, suite}}, res) => res.json(await packInfos.getPackageInfo({dist, suite})));
+  app.get("/pool/:dist/:suite/:arch", async ({params: {dist, suite, arch}}, res) => res.json(await packInfos.getPackageInfo({dist, suite, arch})));
+  app.get("/pool/:dist/:suite/:arch/:packageName", async ({params: {dist, suite, arch, packageName}}, res) => res.json(await packInfos.getPackageInfo({dist, suite, arch, packageName})));
+  app.get("/pool/:dist/:suite/:arch/:packageName/:version", async ({params: {dist, suite, arch, packageName, version}}, res) => res.json(await packInfos.getPackageInfo({dist, suite, arch, packageName, version})));
   app.get("/pool/:dist/:suite/:arch/:packageName/:version/download.deb", async ({params: {dist, suite, arch, packageName, version}}, res, next) => packInfos.getPackageStream(dist, suite, arch, packageName, version).then(data => data.stream.pipe(res.writeHead(200, {"Content-Type": "application/x-debian-package", "Content-Length": data.control.Size, "Content-Disposition": `attachment; filename="${packageName}_${version}_${arch}.deb"`, "SHA256_hash": data.control.SHA256, "MD5Sum_hash": data.control.MD5sum}))).catch(next));
 
   app.get("/dists/(./)?:dist/:suite/binary-:arch/Packages(.(xz|gz)|)", (req, res) => {
@@ -99,7 +99,7 @@ export default async function main(configPath: string) {
 
   // Release
   async function createReleaseV1(dist: string) {
-    const { suites, archs } = packInfos.getDistribuition(dist);
+    const { suites, archs } = await packInfos.getDistribuition(dist);
     const distConfig = repositoryConfig.repositories[dist];
     if (!distConfig) throw new Error("Dist not found");
     const ReleaseLines = [];
