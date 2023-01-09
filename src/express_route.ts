@@ -37,8 +37,8 @@ export default async function main(configPath: string) {
   app.get(["/source_list", "/sources.list"], (req, res) => {
     const remotePath = path.posix.resolve(req.baseUrl + req.path, ".."),
       protocol = req.headers["x-forwarded-proto"] ?? req.protocol,
-      hostname = req.hostname,
-      host = repositoryConfig["apt-config"]?.sourcesHost ?? `${protocol}://${hostname}:${req.socket.localPort}${remotePath}`,
+      hostname = process.env["RAILWAY_STATIC_URL"] ?? `${req.hostname}:${req.socket.localPort}`,
+      host = repositoryConfig["apt-config"]?.sourcesHost ?? `${protocol}://${hostname}${remotePath}`,
       concatPackage = packInfos.getAllDistribuitions(),
       type = req.query.type ?? req.query.t,
       Conflicting = !!(req.query.conflicting ?? req.query.c);
