@@ -35,11 +35,13 @@ export default async function main(configPath: string) {
 
   // Sources list
   app.get(["/source_list", "/sources.list"], (req, res) => {
-    const remotePath = path.posix.resolve(req.baseUrl + req.path, "..");
-    const host = repositoryConfig["apt-config"]?.sourcesHost ?? `${req.protocol}://${req.hostname}:${req.socket.localPort}${remotePath}`;
-    const concatPackage = packInfos.getAllDistribuitions();
-    const type = req.query.type ?? req.query.t;
-    const Conflicting = !!(req.query.conflicting ?? req.query.c);
+    const remotePath = path.posix.resolve(req.baseUrl + req.path, ".."),
+      protocol = req.headers["x-forwarded-proto"] ?? req.protocol,
+      hostname = req.hostname,
+      host = repositoryConfig["apt-config"]?.sourcesHost ?? `${protocol}://${hostname}:${req.socket.localPort}${remotePath}`,
+      concatPackage = packInfos.getAllDistribuitions(),
+      type = req.query.type ?? req.query.t,
+      Conflicting = !!(req.query.conflicting ?? req.query.c);
     if (type === "json") {
       return res.json({
         host,
@@ -239,8 +241,8 @@ export default async function main(configPath: string) {
   });
 
   // Listen HTTP server
-  // express().use(repositoryConfig["apt-config"]?.rootPath ?? "/", app).all("*", ({res}) => res.json({error: "404"})).listen(repositoryConfig["apt-config"].portListen, function () {return console.log(`apt-repo listening at http://localhost:${this.address().port}`);});
-  app.listen(repositoryConfig["apt-config"].portListen, function () {return console.log(`apt-repo listening at http://localhost:${this.address().port}`);});
+  const port = process.env.PORT ?? repositoryConfig["apt-config"].portListen ?? 0;
+  app.listen(port, function () {return console.log(`apt-repo listening at http://localhost:${this.address().port}`);});
 
   // Loading and update packages
   let cronJobs: CronJob[] = [];

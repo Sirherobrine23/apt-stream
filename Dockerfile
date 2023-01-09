@@ -1,5 +1,4 @@
 FROM node:latest
-VOLUME [ "/data" ]
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci

@@ -114,13 +114,15 @@ export async function getConfig(config: string) {
         throw new Error("Invalid config file");
       }
     }
-  } else if (config.startsWith("env:")) {
+  } else if (config.startsWith("env:")||config.startsWith("base64:")||config.startsWith("BASE64:")) {
+    if (config.startsWith("env:")) config = process.env[config.replace(/^env:/, "")];
+    if (/^(base64|BASE64):/.test(config)) config = Buffer.from(config.replace(/^(base64|BASE64):/, ""), "base64").toString();
     avaiableToDirname = false;
     try {
-      configData = JSON.parse(process.env[config.slice(4)]);
+      configData = JSON.parse(config);
     } catch {
       try {
-        configData = yaml.parse(process.env[config.slice(4)]);
+        configData = yaml.parse(config);
       } catch {
         throw new Error("Invalid config file in env, check is JSON or YAML file");
       }

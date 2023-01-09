@@ -89,11 +89,7 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
   });
 }).command("server", "Run HTTP serber", yargs => {
   const options = yargs.parseSync();
-  const envs = Object.keys(process.env).filter(key => key.startsWith("APT_STREAM")).map(envKey => {
-    const data = process.env[envKey];
-    if (data.startsWith("base64:")||data.startsWith("BASE64:")) return Buffer.from(data.slice(7), "base64").toString();
-    return data;
-  });
+  const envs = Object.keys(process.env).filter(key => key.startsWith("APT_STREAM"));
   if (envs.length > 0) return Promise.all(envs.map(async env => repo(`env:${env}`)));
   return repo(options.cofigPath);
 }).parseAsync();
