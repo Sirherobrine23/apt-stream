@@ -13,11 +13,13 @@ export default async function initApp(config: string) {
   const packageManeger = await package_maneger(packageConfig);
   const app = express();
   app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({extended: true})).use((req, res, next) => {
-    res.json = data => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data, null, 2));
-    const cluserID = cluster.worker?.id ?? 0;
-    // [%s TIME STAMP, cluserID: %f]: Path: %s, Method: %s, IP: %s
-    console.log("[%s, cluserID: %f]: Path: %s, Method: %s, IP: %s", new Date().toISOString(), cluserID, req.path, req.method, req.ip);
-    res.on("close", () => console.log("[%s, cluserID: %f]: Path: %s, Method: %s, IP: %s, Status: %f", new Date().toISOString(), cluserID, req.path, req.method, req.ip, res.statusCode));
+    res.json = data => {
+      Promise.resolve(data).then(data => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data, null, 2))).catch(next);
+      return res;
+    };
+    const cluserID = (cluster.worker?.id === 1 ? "Primary" : cluster.worker?.id) ?? "Primary";
+    console.log("[%s, cluserID: %s]: Path: %s, Method: %s, IP: %s", new Date().toISOString(), cluserID, req.path, req.method, req.ip);
+    res.on("close", () => console.log("[%s, cluserID: %s]: Path: %s, Method: %s, IP: %s, Status: %f", new Date().toISOString(), cluserID, req.path, req.method, req.ip, res.statusCode));
     next();
   });
   app.get("/pool/:dist/:suite/:package/:arch/:version/download.deb", async ({params: {dist, suite, package: packageName, arch, version}}, {writeHead}, next) => {
@@ -55,6 +57,10 @@ export default async function initApp(config: string) {
 
   // Create Package, Package.gz and Package.xz
   async function createPackages(dist: string, suite: string, arch: string) {
+    if (!await packageManeger.existsDist(dist)) throw new Error("Distribution not exists");
+    if (!await packageManeger.existsSuite(dist, suite)) throw new Error("Suite not exists");
+    const packages = (await packageManeger.getPackages(dist, suite, undefined, arch)).concat(arch !== "all" ? await packageManeger.getPackages(dist, suite, undefined, "all") : []);
+    if (!packages.length) throw new Error("Check is dist or suite have packages");
     let rawSize = 0, gzipSize = 0, lzmaSize = 0;
     const mainReadstream = new Readable({read(){}}), rawSUMs = coreUtils.extendsCrypto.createHashAsync("all", mainReadstream).then(hash => ({size: rawSize, hash}));
     const gzip = mainReadstream.pipe(createGzip()), gzipSUMs = coreUtils.extendsCrypto.createHashAsync("all", gzip).then(hash => ({size: gzipSize, hash}));
@@ -63,8 +69,6 @@ export default async function initApp(config: string) {
     gzip.on("data", data => gzipSize += data.length);
     lzma.on("data", data => lzmaSize += data.length);
 
-    const packages = await packageManeger.getPackages(dist, suite, undefined, arch);
-    if (!packages.length) throw new Error("Check is dist or suite have packages");
     let fist = true;
     for (const {control} of packages) {
       if (!(control.Size && (control.MD5sum || control.SHA256 || control.SHA1))) continue;
@@ -93,8 +97,8 @@ export default async function initApp(config: string) {
 
   // Release
   async function createRelease(dist: string) {
+    if (!await packageManeger.existsDist(dist)) throw new Error("Dist exists");
     const packagesArray = await packageManeger.getPackages(dist);
-    if (!packagesArray.length) throw new Error("Check is dist have packages");
     const Release: {[key: string]: string|string[]} = {};
 
     // Date

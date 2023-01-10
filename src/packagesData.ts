@@ -2,8 +2,9 @@ import coreUtils, { DebianPackage, DockerRegistry, extendFs, httpRequest, httpRe
 import { createReadStream, createWriteStream, promises as fs } from "node:fs";
 import { MongoClient, ServerApiVersion, Filter } from "mongodb";
 import { apt_config, backendConfig, repository } from "./repoConfig.js";
+import { getPackages as mirror } from "./mirror.js";
 import { Readable } from "node:stream";
-import { getPackages } from "./mirror.js";
+import cluster from "node:cluster";
 import path from "node:path";
 import tar from "tar";
 
@@ -25,6 +26,8 @@ export type packageManegerV2 = {
   getPackages: (dist?: string, suite?: string, Package?: string, Arch?: string, Version?: string) => Promise<packageSave[]>,
   deletePackage: (repo: Partial<packageSave>) => Promise<packageSave>,
   addPackage: (repo: packageSave) => Promise<void>,
+  existsDist: (dist: string) => Promise<boolean>,
+  existsSuite: (dist: string, suite: string) => Promise<boolean>,
 };
 
 /**
@@ -38,10 +41,13 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     const saveFile = aptConfig["apt-config"]?.saveFiles ?? false;
     const rootPool = aptConfig["apt-config"]?.poolPath ?? path.join(process.cwd(), "pool");
     if (repository.from === "mirror") {
-      return Promise.all(Object.keys(repository.dists).map(async distName => {
-        const distInfo = repository.dists[distName];
-        const packagesData = distInfo.suites ? await Promise.all(distInfo.suites.map(async suite => getPackages(repository.uri, {dist: distName, suite}))).then(U => U.flat()) : await getPackages(repository.uri, {dist: distName});
-        return packagesData.forEach(({Package: control}) => {
+      // Ingore fast load data for low ram memory
+      for (const repoDistName in repository.dists) {
+        const distInfo = repository.dists[repoDistName];
+        const packagesData: Awaited<ReturnType<typeof mirror>> = [];
+        if (!distInfo.suites) await mirror(repository.uri, {dist: distName}).then(U => packagesData.push(...U));
+        else for (const suite of distInfo.suites) await mirror(repository.uri, {dist: repoDistName, suite}).then(U => packagesData.push(...U));
+        const partialPromises = packagesData.map(({Package: control}) => {
           const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
           const getStream = async () => {
             if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
@@ -56,7 +62,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
           }
           return partialConfig.addPackage({
             dist: distName,
-            suite: repository.suite,
+            suite: repository.suite ?? "main",
             repository: repository,
             control,
             aptConfig: packageAptConfig ?? aptConfig["apt-config"],
@@ -67,7 +73,9 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             }
           });
         });
-      }));
+
+        return Promise.all(partialPromises);
+      }
     } else if (repository.from === "oci") {
       const registry = await DockerRegistry.Manifest.Manifest(repository.image, repository.platfom_target);
       return registry.layersStream((data) => {
@@ -298,18 +306,37 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     const mongoClient = await (new MongoClient(mongoConfig.uri, {serverApi: ServerApiVersion.v1})).connect();
     const collection = mongoClient.db(mongoConfig.db ?? "aptStream").collection<packageSave>(mongoConfig.collection ?? "packagesData");
 
+    // Drop collection
+    if (cluster.isPrimary) {
+      if (mongoConfig.dropCollention && await collection.findOne()) {
+        await collection.drop();
+        console.log("Drop collection: %s", mongoConfig.collection ?? "packagesData");
+      }
+    }
+
     // Add package to database
     partialConfig.addPackage = async function addPackage(repo) {
       const existsPackage = await collection.findOne({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture});
       if (existsPackage) await partialConfig.deletePackage(repo);
       await collection.insertOne(repo);
+      console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
     }
 
     // Delete package
     partialConfig.deletePackage = async function deletePackage(repo) {
-      const packageDelete = await collection.findOneAndDelete({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture});
-      if (!packageDelete.value) throw new Error("Package not found!");
-      return packageDelete.value;
+      const packageDelete = (await collection.findOneAndDelete({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture}))?.value;
+      if (!packageDelete) throw new Error("Package not found!");
+      console.info("Deleted '%s', version: %s, Arch: %s, from %s/%s", packageDelete.control.Package, packageDelete.control.Version, packageDelete.control.Architecture, packageDelete.dist, packageDelete.suite);
+      return packageDelete;
+    }
+
+    // Exists
+    partialConfig.existsDist = async function existsDist(dist) {
+      return (await collection.findOne({dist})) ? true : false;
+    }
+    partialConfig.existsSuite = async function existsSuite(dist, suite) {
+      if (await partialConfig.existsDist(dist)) return (await collection.findOne({dist, suite})) ? true : false;
+      return false;
     }
 
     // Packages
@@ -341,8 +368,14 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     }
     partialConfig.getPackages = async function getPackages(dist, suite, Package, Arch, Version) {
       const doc: Filter<packageSave> = {};
-      if (dist) doc.dist = dist;
-      if (suite) doc.suite = suite;
+      if (dist) {
+        if (!await partialConfig.existsDist(dist)) throw new Error("Distribution not found!");
+        doc.dist = dist;
+      }
+      if (suite) {
+        if (!await partialConfig.existsSuite(dist, suite)) throw new Error("Suite/Component not found!");
+        doc.suite = suite;
+      }
       if (Package) doc["control.Package"] = Package;
       if (Arch) doc["control.Architecture"] = Arch;
       if (Version) doc["control.Version"] = Version;
@@ -359,18 +392,31 @@ export default async function packageManeger(config: backendConfig): Promise<pac
       const existsPackage = packagesArray.find((x) => x.control.Package === repo.control.Package && x.control.Version === repo.control.Version && x.control.Architecture === repo.control.Architecture && x.dist === repo.dist && x.suite === repo.suite && x.repository === repo.repository);
       if (existsPackage) await partialConfig.deletePackage(repo);
       packagesArray.push(repo);
+      console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
     }
 
     // Delete package
     partialConfig.deletePackage = async function deletePackage(repo) {
       const index = packagesArray.findIndex((x) => x.control.Package === repo.control.Package && x.control.Version === repo.control.Version && x.control.Architecture === repo.control.Architecture && x.dist === repo.dist && x.suite === repo.suite && x.repository === repo.repository);
       if (index === -1) throw new Error("Package not found!");
-      const packageDelete = packagesArray.splice(index, 1);
-      return packageDelete.at(-1);
+      const packageDelete = packagesArray.splice(index, 1).at(-1);
+      console.info("Deleted '%s', version: %s, Arch: %s, from %s/%s", packageDelete.control.Package, packageDelete.control.Version, packageDelete.control.Architecture, packageDelete.dist, packageDelete.suite);
+      return packageDelete;
+    }
+
+    // Exists
+    partialConfig.existsDist = async function existsDist(dist) {
+      return packagesArray.find(x => x.dist === dist) ? true : false;
+    }
+    partialConfig.existsSuite = async function existsSuite(dist, suite) {
+      if (await partialConfig.existsDist(dist)) return packagesArray.find(x => x.dist === dist && x.suite === suite) ? true : false;
+      return false;
     }
 
     // Packages
     partialConfig.getPackages = async function getPackages(dist, suite, Package, Arch, Version) {
+      if (dist && !await partialConfig.existsDist(dist)) throw new Error("Distribution not found!");
+      if (suite && !await partialConfig.existsSuite(dist, suite)) throw new Error("Suite/Component not found!");
       const packageInfo = packagesArray.filter(x => (!dist || x.dist === dist) && (!suite || x.suite === suite) && (!Package || x.control.Package === Package) && (!Arch || x.control.Architecture === Arch) && (!Version || x.control.Version === Version));
       if (!packageInfo.length) throw new Error("Package not found!");
       return packageInfo;

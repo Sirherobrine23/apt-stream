@@ -21,6 +21,8 @@
     "src/**/*.test.ts"
   ],
   "ts-node": {
-    "esm": true
+    "esm": true,
+    "experimentalResolver": true,
+    "experimentalSpecifierResolution": "node"
   }
 }

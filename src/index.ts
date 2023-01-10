@@ -100,7 +100,7 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
   app.use((err, {}, res, {}) => {
     console.error(err);
     const stack: string = err?.stack ?? "No stack";
-    res.status(500).json({
+    res.status(400).json({
       error: "Internal Server Error",
       message: "There was an error on our part, sorry for the inconvenience",
       stack: {
@@ -112,21 +112,25 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
   const port = process.env.PORT ?? packageConfig["apt-config"]?.portListen ?? 3000;
   if (!(Boolean(process.env["DISABLE_CLUSTER"]))) {
     if (cluster.isWorker) {
-      app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
-      return console.log("Worker %d running, PID: %f", cluster.worker?.id ?? "No ID", process.pid);
+      console.log("Worker %d running, PID: %f", cluster.worker?.id ?? "No ID", process.pid);
+      app.listen(port, function() {
+        console.log("Work apt Stream Port listen on %f", this.address()?.port);
+      });
+      return;
     }
-    console.log("Master %f is running", process.pid);
+    console.log("Work master, PID %f, starting workers ...", process.pid);
     os.cpus().forEach(() => cluster.fork());
-    cluster.on("exit", (worker, code, signal: NodeJS.Signals) => {
+    cluster.on("error", console.error).on("exit", (worker, code, signal: NodeJS.Signals) => {
+      // if (process[Symbol.for("ts-node.register.instance")]) cluster.setupPrimary({/* Fix for ts-node */ execArgv: ["--loader", "ts-node/esm"]});
       if (signal === "SIGKILL") return console.log("Worker %d was killed", worker?.id ?? "No ID");
+      else if (signal === "SIGABRT") return console.log("Worker %d was aborted", worker?.id ?? "No ID");
       else if (signal === "SIGTERM") return console.log("Worker %d was terminated", worker?.id ?? "No ID");
-      else if (code )
       console.log("Worker %d died with code: %s, Signal: %s", worker?.id ?? "No ID", code, signal ?? "No Signal");
-    });
+    }).on("online", worker => console.log("Worker %d is online", worker?.id ?? "No ID"));
   } else app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
 
   // large ram available
-  if (os.freemem() > 2 * 1024 * 1024 * 1024) return Promise.all(Object.keys(packageConfig.repositories).map(async distName => {const dist = packageConfig.repositories[distName]; return Promise.all(dist.targets.map(async target => packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).catch(console.error)));})).catch(console.error);
+  if (os.freemem() > 2 * 1024 * 1024 * 1024) await Promise.all(Object.keys(packageConfig.repositories).map(async distName => {const dist = packageConfig.repositories[distName]; return Promise.all(dist.targets.map(async target => packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).catch(console.error)));})).catch(console.error);
   console.warn("Not enough RAM to load all repositories, loading one by one");
   for (const distName in packageConfig.repositories) {
     const dist = packageConfig.repositories[distName];

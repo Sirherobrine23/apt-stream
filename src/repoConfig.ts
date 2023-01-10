@@ -82,6 +82,8 @@ export type backendConfig = Partial<{
       uri: string,
       db?: string,
       collection?: string,
+      /** On connect to database drop collection to run in empty data */
+      dropCollention?: boolean
     }
   },
   repositories: {
@@ -165,7 +167,8 @@ export async function getConfig(config: string) {
       fixedConfig["apt-config"].mongodb = {
         uri: rootData.mongodb.uri,
         db: rootData.mongodb.db ?? "apt-stream",
-        collection: rootData.mongodb.collection ?? "packages"
+        collection: rootData.mongodb.collection ?? "packages",
+        dropCollention: Boolean(rootData.mongodb.dropCollention ?? false)
       };
     }
   }

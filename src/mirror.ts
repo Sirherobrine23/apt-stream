@@ -91,14 +91,14 @@ export async function getPackages(uri: string, options: {dist: string, suite?: s
           reject(err);
         }
       });
-      let data = "";
+      let data: string;
       stream.pipe(new Writable({
         final(callback) {
           done();
           callback();
         },
         write(chunkR, encoding, callback) {
-          data = data + (encoding === "binary" ? chunkR.toString("utf8") : Buffer.from(chunkR).toString("utf8"));
+          data = (data ?? "") + (encoding === "binary" ? chunkR.toString("utf8") : Buffer.from(chunkR).toString("utf8"));
           data.split(/^\n/).forEach((v) => {
             if (v.trim()) {
               data = data.replace(v, "");
