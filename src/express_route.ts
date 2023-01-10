@@ -22,12 +22,12 @@ export default async function initApp(config: string) {
     res.on("close", () => console.log("[%s, cluserID: %s]: Path: %s, Method: %s, IP: %s, Status: %f", new Date().toISOString(), cluserID, req.path, req.method, req.ip, res.statusCode));
     next();
   });
-  app.get("/pool/:dist/:suite/:package/:arch/:version/download.deb", async ({params: {dist, suite, package: packageName, arch, version}}, {writeHead}, next) => {
+  app.get("/pool/:dist/:suite/:package/:arch/:version/download.deb", async ({params: {dist, suite, package: packageName, arch, version}}, res, next) => {
     try {
       const data = (await packageManeger.getPackages(dist, suite, packageName, arch, version))?.at(-1);
       if (!data) return next(new Error("Not Found"));
       const fileStream = await data.getFileStream();
-      fileStream.pipe(writeHead(200, {
+      fileStream.pipe(res.writeHead(200, {
         "Content-Type": "application/x-debian-package",
         "Content-Length": data.control.Size,
         "Content-Disposition": `attachment; filename="${packageName}_${version}_${arch}.deb"`,
@@ -55,6 +55,10 @@ export default async function initApp(config: string) {
     return old;
   }, {}))).catch(next));
 
+  // Dists info
+  app.get("/dists", ({}, res, next) => packageManeger.getDists().then(data => res.json(data)).catch(next));
+  app.get("/dists/:dist", ({params: {dist}}, res, next) => packageManeger.getDistInfo(dist).then(data => res.json(data)).catch(next));
+
   // Create Package, Package.gz and Package.xz
   async function createPackages(dist: string, suite: string, arch: string) {
     if (!await packageManeger.existsDist(dist)) throw new Error("Distribution not exists");
@@ -74,7 +78,7 @@ export default async function initApp(config: string) {
       if (!(control.Size && (control.MD5sum || control.SHA256 || control.SHA1))) continue;
       if (fist) fist = false; else mainReadstream.push("\n\n");
       control.Filename = `pool/${dist}/${suite}/${control.Package}/${control.Architecture}/${control.Version}/download.deb`;
-      mainReadstream.push(Object.keys(control).map(key => mainReadstream.push(`${key}: ${control[key]}`)).join("\n"));
+      mainReadstream.push(Object.keys(control).map(key => `${key}: ${control[key]}`).join("\n"));
     }
     mainReadstream.push(null);
 
@@ -89,6 +93,7 @@ export default async function initApp(config: string) {
       }
     };
   }
+
   app.get("/dists/(./)?:dist/:suite/binary-:arch/Packages(.(xz|gz)|)", async ({params: {dist, suite, arch}, path: reqPath}, res, next) => createPackages(dist, suite, arch).then(packages => {
     if (reqPath.endsWith(".gz")) return packages.gzip.pipe(res);
     else if (reqPath.endsWith(".xz")) return packages.lzma.pipe(res);

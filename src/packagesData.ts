@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import cluster from "node:cluster";
 import path from "node:path";
 import tar from "tar";
+import { format } from "node:util";
 
 export type packageSave = {
   dist: string,
@@ -28,6 +29,13 @@ export type packageManegerV2 = {
   addPackage: (repo: packageSave) => Promise<void>,
   existsDist: (dist: string) => Promise<boolean>,
   existsSuite: (dist: string, suite: string) => Promise<boolean>,
+  getDists: () => Promise<string[]>,
+  getDistInfo: (dist: string) => Promise<{
+    packagesCount: number,
+    arch: string[],
+    packagesName: string[],
+    suites: string[],
+  }>,
 };
 
 /**
@@ -36,6 +44,20 @@ export type packageManegerV2 = {
  */
 export default async function packageManeger(config: backendConfig): Promise<packageManegerV2> {
   const partialConfig: Partial<packageManegerV2> = {};
+  partialConfig.getDists = async function getDists() {
+    const packages = await partialConfig.getPackages();
+    return [...new Set(packages.map(U => U.dist))];
+  }
+
+  partialConfig.getDistInfo = async function getDistInfo(dist: string) {
+    const packages = await partialConfig.getPackages(dist);
+    return {
+      packagesCount: packages.length,
+      packagesName: [...new Set(packages.map(U => U.control.Package))],
+      arch: [...new Set(packages.map(U => U.control.Architecture))],
+      suites: [...new Set(packages.map(U => U.suite))],
+    };
+  }
 
   partialConfig.loadRepository = async function loadRepository(distName: string, repository: repository, packageAptConfig?: apt_config, aptConfig?: backendConfig) {
     const saveFile = aptConfig["apt-config"]?.saveFiles ?? false;
@@ -71,7 +93,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
               from: "mirror",
               fileUrl: control.Filename,
             }
-          });
+          }).catch(err => err);
         });
 
         return Promise.all(partialPromises);
@@ -154,7 +176,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
               from: "github_release",
               fileUrl: browser_download_url,
             }
-          });
+          }).catch(err => {});
         })))).then(data => data.flat(2).filter(Boolean));
       }
       const release = await httpRequestGithub.getRelease({owner: repository.owner, repository: repository.repository, token: repository.token, peer: repository.assetsLimit, all: false});
@@ -184,7 +206,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "github_release",
             fileUrl: browser_download_url,
           }
-        });
+        }).catch(err => {});
       })))).then(data => data.flat(2).filter(Boolean));
     } else if (repository.from === "github_tree") {
       const { tree } = await httpRequestGithub.githubTree(repository.owner, repository.repository, repository.tree);
@@ -225,7 +247,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "github_tree",
             fileUrl: downloadUrl,
           }
-        });
+        }).catch(err => {});
       }));
     } else if (repository.from === "google_drive") {
       const client_id = repository.appSettings.client_id;
@@ -264,7 +286,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "google_drive",
             fileId: fileData.id,
           }
-        });
+        }).catch(err => {});
       }));
     } else if (repository.from === "oracle_bucket") {
       const oracleBucket = await coreUtils.oracleBucket(repository.region as any, repository.bucketName, repository.bucketNamespace, repository.auth);
@@ -293,7 +315,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "oracle_bucket",
             fileName: fileData.name,
           }
-        });
+        }).catch(err => {});
       }));
     }
 
@@ -317,7 +339,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     // Add package to database
     partialConfig.addPackage = async function addPackage(repo) {
       const existsPackage = await collection.findOne({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture});
-      if (existsPackage) await partialConfig.deletePackage(repo);
+      if (existsPackage) throw new Error(format("Package (%s/%s: %s) already exists!", repo.control.Package, repo.control.Version, repo.control.Architecture));
       await collection.insertOne(repo);
       console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
     }
@@ -350,7 +372,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
         } else if (data.restoreFileStream.from === "oracle_bucket" && data.repository.from === "oracle_bucket") {
           const oracleBucket = await coreUtils.oracleBucket(data.repository.region as any, data.repository.bucketName, data.repository.bucketNamespace, data.repository.auth);
           return oracleBucket.getFileStream(data.restoreFileStream.fileName);
-        } else if (data.restoreFileStream.from === "mirror" && data.repository.from === "mirror") return coreUtils.httpRequest.pipeFetch(data.restoreFileStream.url);
+        } else if (data.restoreFileStream.from === "mirror" && data.repository.from === "mirror") return coreUtils.httpRequest.pipeFetch(data.restoreFileStream.fileUrl);
         else if (data.restoreFileStream.from === "oci" && data.repository.from === "oci") {
           const oci = await coreUtils.DockerRegistry(data.repository.image);
           return new Promise((done, reject) => {
@@ -390,7 +412,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     // Add package to array
     partialConfig.addPackage = async function addPackage(repo) {
       const existsPackage = packagesArray.find((x) => x.control.Package === repo.control.Package && x.control.Version === repo.control.Version && x.control.Architecture === repo.control.Architecture && x.dist === repo.dist && x.suite === repo.suite && x.repository === repo.repository);
-      if (existsPackage) await partialConfig.deletePackage(repo);
+      if (existsPackage) throw new Error("Package already exists!");
       packagesArray.push(repo);
       console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
     }

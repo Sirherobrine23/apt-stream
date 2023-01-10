@@ -90,9 +90,17 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     console.log("base64:%s", base64);
   });
 }).command("server", "Run HTTP serber", async yargs => {
-  const options = yargs.parseSync();
-  const envs = Object.keys(process.env).filter(key => key.startsWith("APT_STREAM"));
-  const { app, packageConfig, packageManeger } = await repo(envs.length > 0 ? `env:${envs[0]}` : options.cofigPath);
+  const options = yargs.option("cpus", {
+    type: "number",
+    default: os.cpus().length/2,
+    alias: "C",
+    demandOption: false,
+    description: "Number of cpus to use in Cluster"
+  }).parseSync();
+  console.log("Starting server...");
+  process.on("unhandledRejection", err => console.error(err));
+  process.on("uncaughtException", err => console.error(err));
+  const { app, packageConfig, packageManeger } = await repo(Object.keys(process.env).find(key => key.startsWith("APT_STREAM")) ? `env:${Object.keys(process.env).find(key => key.startsWith("APT_STREAM"))}` : options.cofigPath);
   app.all("*", ({res}) => res.status(404).json({
     error: "Endpoint not exists",
     message: "Endpoint not exists, check the documentation for more information"
@@ -110,7 +118,7 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     });
   });
   const port = process.env.PORT ?? packageConfig["apt-config"]?.portListen ?? 3000;
-  if (!(Boolean(process.env["DISABLE_CLUSTER"]))) {
+  if (options.cpus > 1) {
     if (cluster.isWorker) {
       console.log("Worker %d running, PID: %f", cluster.worker?.id ?? "No ID", process.pid);
       app.listen(port, function() {
@@ -119,23 +127,28 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
       return;
     }
     console.log("Work master, PID %f, starting workers ...", process.pid);
-    os.cpus().forEach(() => cluster.fork());
-    cluster.on("error", console.error).on("exit", (worker, code, signal: NodeJS.Signals) => {
+    for (let i = 0; i < options.cpus; i++) cluster.fork({...process.env, workNumber: i});
+    cluster.on("error", err => {
+      console.log(err?.stack ?? String(err));
+      // process.exit(1);
+    }).on("exit", (worker, code, signal: NodeJS.Signals) => {
       // if (process[Symbol.for("ts-node.register.instance")]) cluster.setupPrimary({/* Fix for ts-node */ execArgv: ["--loader", "ts-node/esm"]});
       if (signal === "SIGKILL") return console.log("Worker %d was killed", worker?.id ?? "No ID");
       else if (signal === "SIGABRT") return console.log("Worker %d was aborted", worker?.id ?? "No ID");
       else if (signal === "SIGTERM") return console.log("Worker %d was terminated", worker?.id ?? "No ID");
       console.log("Worker %d died with code: %s, Signal: %s", worker?.id ?? "No ID", code, signal ?? "No Signal");
+      cluster.fork();
     }).on("online", worker => console.log("Worker %d is online", worker?.id ?? "No ID"));
-  } else app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
+  } else {
+    console.warn("Running without cluster, this is not recommended for production");
+    app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
+  }
 
-  // large ram available
-  if (os.freemem() > 2 * 1024 * 1024 * 1024) await Promise.all(Object.keys(packageConfig.repositories).map(async distName => {const dist = packageConfig.repositories[distName]; return Promise.all(dist.targets.map(async target => packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).catch(console.error)));})).catch(console.error);
-  console.warn("Not enough RAM to load all repositories, loading one by one");
   for (const distName in packageConfig.repositories) {
     const dist = packageConfig.repositories[distName];
     for (const target of dist.targets) {
-      await packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).catch(console.error);
+      await packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).catch(err => console.error(String(err)));
+      console.log("Complete load repository '%s'", distName);
     }
   }
 }).parseAsync();
