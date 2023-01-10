@@ -6,6 +6,8 @@ import yargs from "yargs";
 import path from "node:path";
 import repo from "./express_route.js";
 import yaml from "yaml";
+import os from "node:os";
+import cluster from "node:cluster";
 
 yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommands().alias("h", "help").option("cofig-path", {
   type: "string",
@@ -84,12 +86,52 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     }).parseSync();
     const config = await getConfig(options.cofigPath);
     const base64 = Buffer.from(options.json ? JSON.stringify(config) : yaml.stringify(config)).toString("base64");
-    if (options.output) return writeFile(options.output, base64).then(() => console.log("Saved to '%s'", options.output));
+    if (options.output) return writeFile(options.output, "base64:"+base64).then(() => console.log("Saved to '%s'", options.output));
     console.log("base64:%s", base64);
   });
-}).command("server", "Run HTTP serber", yargs => {
+}).command("server", "Run HTTP serber", async yargs => {
   const options = yargs.parseSync();
   const envs = Object.keys(process.env).filter(key => key.startsWith("APT_STREAM"));
-  if (envs.length > 0) return Promise.all(envs.map(async env => repo(`env:${env}`)));
-  return repo(options.cofigPath);
+  const { app, packageConfig, packageManeger } = await repo(envs.length > 0 ? `env:${envs[0]}` : options.cofigPath);
+  app.all("*", ({res}) => res.status(404).json({
+    error: "Endpoint not exists",
+    message: "Endpoint not exists, check the documentation for more information"
+  }));
+  app.use((err, {}, res, {}) => {
+    console.error(err);
+    const stack: string = err?.stack ?? "No stack";
+    res.status(500).json({
+      error: "Internal Server Error",
+      message: "There was an error on our part, sorry for the inconvenience",
+      stack: {
+        forUser: "Create issue in apt-stream repository (https://github.com/Sirherobrine23/apt-stream/issues) with value of 'forDeveloper'",
+        forDeveloper: stack
+      },
+    });
+  });
+  const port = process.env.PORT ?? packageConfig["apt-config"]?.portListen ?? 3000;
+  if (!(Boolean(process.env["DISABLE_CLUSTER"]))) {
+    if (cluster.isWorker) {
+      app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
+      return console.log("Worker %d running, PID: %f", cluster.worker?.id ?? "No ID", process.pid);
+    }
+    console.log("Master %f is running", process.pid);
+    os.cpus().forEach(() => cluster.fork());
+    cluster.on("exit", (worker, code, signal: NodeJS.Signals) => {
+      if (signal === "SIGKILL") return console.log("Worker %d was killed", worker?.id ?? "No ID");
+      else if (signal === "SIGTERM") return console.log("Worker %d was terminated", worker?.id ?? "No ID");
+      else if (code )
+      console.log("Worker %d died with code: %s, Signal: %s", worker?.id ?? "No ID", code, signal ?? "No Signal");
+    });
+  } else app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
+
+  // large ram available
+  if (os.freemem() > 2 * 1024 * 1024 * 1024) return Promise.all(Object.keys(packageConfig.repositories).map(async distName => {const dist = packageConfig.repositories[distName]; return Promise.all(dist.targets.map(async target => packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).catch(console.error)));})).catch(console.error);
+  console.warn("Not enough RAM to load all repositories, loading one by one");
+  for (const distName in packageConfig.repositories) {
+    const dist = packageConfig.repositories[distName];
+    for (const target of dist.targets) {
+      await packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).catch(console.error);
+    }
+  }
 }).parseAsync();

@@ -12,7 +12,10 @@
       "skipFiles": ["<node_internals>/**", "node_modules/**"],
       "cwd": "${workspaceRoot}",
       "runtimeExecutable": "ts-node",
-      "args": ["src/index.ts", "server"]
+      "args": ["src/index.ts", "server"],
+      "env": {
+        "DISABLE_CLUSTER": "true"
+      }
     }
   ]
 }

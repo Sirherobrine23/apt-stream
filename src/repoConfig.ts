@@ -1,15 +1,8 @@
-import coreUtils, { DebianPackage, DockerRegistry, extendFs, extendsCrypto, httpRequest } from "@sirherobrine23/coreutils";
-import { createReadStream, createWriteStream } from "node:fs";
-import { MongoClient, ServerApiVersion } from "mongodb";
-import { Compressor as lzmaCompressor } from "lzma-native";
-import { Readable, Writable } from "node:stream";
-import { debianControl } from "@sirherobrine23/coreutils/src/deb.js";
-import { createGzip } from "node:zlib";
+import coreUtils, { DockerRegistry, extendFs, httpRequest } from "@sirherobrine23/coreutils";
 import { format } from "node:util";
 import yaml from "yaml";
 import path from "node:path";
 import fs from "node:fs/promises";
-import tar from "tar";
 
 export type apt_config = {
   origin?: string,
@@ -108,7 +101,6 @@ export async function saveConfig(filePath: string, config: backendConfig) {
 }
 
 export async function getConfig(config: string) {
-  const fixedConfig: backendConfig = {};
   let configData: backendConfig, avaiableToDirname = true;
   if (config.startsWith("http")) {
     avaiableToDirname = false;
@@ -136,15 +128,20 @@ export async function getConfig(config: string) {
       }
     }
   } else {
-    if (!await coreUtils.extendFs.exists(config)) throw new Error("config File not exists");
+    if (!await coreUtils.extendFs.exists(config)) throw new Error("config File not exists, return "+JSON.stringify(config));
     configData = yaml.parse(await fs.readFile(config, "utf8"));
   }
-  fixedConfig["apt-config"] = {};
+  if (typeof configData !== "object") throw new Error("Invalid config file");
+
+  const fixedConfig: backendConfig = {
+    "apt-config": {},
+    repositories: {}
+  };
   if (configData["apt-config"]) {
     const rootData = configData["apt-config"];
     fixedConfig["apt-config"].portListen = rootData.portListen ?? 3000;
-    fixedConfig["apt-config"].poolPath = rootData.poolPath ?? path.join(process.cwd(), "apt-stream");
     fixedConfig["apt-config"].saveFiles = rootData.saveFiles ?? false;
+    if (rootData.poolPath) fixedConfig["apt-config"].poolPath = rootData.poolPath;
     if (fixedConfig["apt-config"].poolPath && !await extendFs.exists(fixedConfig["apt-config"].poolPath)) await fs.mkdir(fixedConfig["apt-config"].poolPath, {recursive: true});
     if (rootData.codename) fixedConfig["apt-config"].codename = rootData.codename;
     if (rootData.origin) fixedConfig["apt-config"].origin = rootData.origin;
@@ -288,308 +285,4 @@ export async function getConfig(config: string) {
     });
   });
   return fixedConfig;
-}
-
-export type packageData = {
-  control: debianControl,
-  getStream: () => Readable|Promise<Readable>,
-  repositoryConfig?: repository
-}
-
-type distObject = {
-  [distribuition: string]: {
-    [suite: string]: {
-      [arch: string]: packageData[]
-    }
-  }
-}
-
-type dbDist = {
-  control: debianControl,
-  repositoryConfig?: repository,
-  dist: string,
-  suite: string,
-  getfile: repository & {file: string, blobLayer?: string}
-};
-
-export class distManegerPackages {
-  public distribuitions: distObject = {};
-  public mongoClinte?: MongoClient;
-  public internalDist: distObject = {};
-  public config: backendConfig;
-  constructor(config: backendConfig) {
-    this.config = config;
-    if (config["apt-config"]?.mongodb) {
-      this.mongoClinte = new MongoClient(config["apt-config"]?.mongodb?.uri, {
-        serverApi: ServerApiVersion.v1,
-      });
-      this.mongoClinte.connect();
-    }
-  }
-
-  async getPackages(dist?: string, suite?: string): Promise<distObject> {
-    let repo: distObject = {};
-    if (!this.mongoClinte) repo = this.distribuitions;
-    else {
-      if (dist && typeof dist !== "string") throw new Error("dist must be a string");
-      if (suite && typeof suite !== "string") throw new Error("suite must be a string");
-      const saveFile = this.config["apt-config"]?.saveFiles;
-      const rootPool = this.config["apt-config"]?.poolPath;
-      const collection = this.mongoClinte.db(this.config["apt-config"]?.mongodb?.db ?? "packages").collection<dbDist>(this.config["apt-config"]?.mongodb.collection ?? "packages");
-      for (const dataDB of await collection.find({dist, suite}).toArray()) {
-        const repository = dataDB.getfile, control = dataDB.control;
-        if (dist && dist !== dataDB.dist) continue;
-        if (suite && suite !== dataDB.suite) continue;
-        async function getStream() {
-          if (repository.from === "mirror") {
-            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
-            if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
-            return coreUtils.httpRequest.pipeFetch(dataDB.getfile.file);
-          } else if (repository.from === "oci") {
-            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
-            if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
-            const registry = await coreUtils.DockerRegistry(repository.image, repository.platfom_target);
-            return new Promise<Readable>((done, reject) => registry.blobLayerStream(dataDB.getfile.blobLayer).then(stream => {
-              stream.on("error", reject);
-              stream.pipe(tar.list({
-                async onentry(getEntry) {
-                  if (getEntry.path !== dataDB.getfile.file) return null;
-                  if (saveFile) {
-                    const mainPath = path.resolve(filePool, "..");
-                    if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
-                    getEntry.pipe(createWriteStream(filePool));
-                  }
-                  return done(getEntry as any);
-                }
-              // @ts-ignore
-              }).on("error", reject));
-            }).catch(reject));
-          } else if (repository.from === "github_release" || repository.from === "github_tree") {
-            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
-            if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
-            return coreUtils.httpRequest.pipeFetch({
-              url: dataDB.getfile.file,
-              headers: (repository.token ? {"Authorization": `token ${repository.token}`} : {})
-            })
-          } else if (repository.from === "google_drive") {
-            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
-            if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
-            const client_id = repository.appSettings.client_id;
-            const client_secret = repository.appSettings.client_secret;
-            const token = repository.appSettings.token;
-            const googleDriver = await coreUtils.googleDriver.GoogleDriver(client_id, client_secret, {
-              token,
-              async authCallback(url, token) {
-                if (url) console.log("Please visit this url to auth google driver: %s", url);
-                else console.log("Google driver auth success, please save token to config file, token: %s", token);
-              },
-            });
-            return googleDriver.getFileStream(dataDB.getfile.file);
-          } else if (repository.from === "oracle_bucket") {
-            const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
-            if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
-            const oracleBucket = await coreUtils.oracleBucket(repository.region as any, repository.bucketName, repository.bucketNamespace, repository.auth);
-            return oracleBucket.getFileStream(dataDB.getfile.file);
-          }
-
-          return null;
-        }
-        if (!repo[dataDB.dist]) repo[dataDB.dist] = {};
-        if (!repo[dataDB.dist][dataDB.suite]) repo[dataDB.dist][dataDB.suite] = {};
-        if (!repo[dataDB.dist][dataDB.suite][control.Architecture]) repo[dataDB.dist][dataDB.suite][control.Architecture] = [];
-        repo[dataDB.dist][dataDB.suite][control.Architecture].push({
-          getStream,
-          repositoryConfig: dataDB.repositoryConfig,
-          control,
-        });
-        console.log("add package %s %s %s %s", dataDB.dist, dataDB.suite, control.Architecture, control.Package);
-      };
-    }
-    return repo;
-  }
-
-  public async addDistribuition(distribuition: string) {
-    if (!this.distribuitions[distribuition]) this.distribuitions[distribuition] = {};
-    return this.distribuitions[distribuition];
-  }
-  public async addSuite(distribuition: string, suite: string) {
-    if (!this.distribuitions[distribuition][suite]) this.distribuitions[distribuition][suite] = {};
-    return this.distribuitions[distribuition][suite];
-  }
-  public async addArch(distribuition: string, suite: string, arch: string) {
-    if (!this.distribuitions[distribuition][suite][arch]) this.distribuitions[distribuition][suite][arch] = [];
-    return this.distribuitions[distribuition][suite][arch];
-  }
-
-  /**
-   * Register package in distribuition and suite
-   *
-   * @param distribuition
-   * @param suite
-   * @param arch
-   * @param control
-   * @param getStream
-   * @returns
-   */
-  public async addPackage(distribuition: string, suite: string, packageData: packageData) {
-    const dist = await this.getPackages(distribuition, suite);
-    this.addDistribuition(distribuition);
-    this.addSuite(distribuition, suite);
-    this.addArch(distribuition, suite, packageData.control.Architecture);
-    const currentPackages = dist[distribuition]?.[suite]?.[packageData.control.Architecture] ?? [];
-    if (!this.mongoClinte) {
-      if (currentPackages.some(pkg => pkg.control.Package === packageData.control.Package)) {
-        if (currentPackages.some(pkg => pkg.control.Version === packageData.control.Version && pkg.control.Package === packageData.control.Package)) {
-          const index = currentPackages.findIndex(pkg => pkg.control.Version === packageData.control.Version && pkg.control.Package === packageData.control.Package);
-          return dist[distribuition][suite][packageData.control.Architecture][index] = packageData;
-        }
-      }
-      dist[distribuition][suite][packageData.control.Architecture].push(packageData);
-    } else {
-      const collection = this.mongoClinte.db(this.config["apt-config"]?.mongodb?.db ?? "packages").collection(this.config["apt-config"]?.mongodb.collection ?? "packages");
-      const currentPackages = await collection.findOne({
-        dist: distribuition,
-        suite,
-        cotrol: {
-          Package: packageData.control.Package,
-          Version: packageData.control.Version,
-          Architecture: packageData.control.Architecture,
-        }
-      });
-      if (currentPackages) await collection.deleteOne(currentPackages);
-      await collection.insertOne({
-        dist: distribuition,
-        suite,
-        control: packageData.control,
-        repository: packageData.repositoryConfig
-      });
-    }
-    return packageData;
-  }
-
-  public deletePackage(distribuition: string, suite: string, arch: string, packageName: string, version: string) {
-    if (!this.distribuitions[distribuition]) throw new Error("Distribuition not exists");
-    if (!this.distribuitions[distribuition][suite]) throw new Error("Suite not exists");
-    if (!this.distribuitions[distribuition][suite][arch]) throw new Error("Arch not exists");
-    const index = this.distribuitions[distribuition][suite][arch].findIndex(pkg => pkg.control.Package === packageName && pkg.control.Version === version);
-    if (index === -1) throw new Error("Package not exists");
-    const data = this.distribuitions[distribuition][suite][arch][index];
-    this.distribuitions[distribuition][suite][arch].splice(index, 1);
-    return data;
-  }
-
-  public async getDistribuition(distName: string) {
-    const dist = (await this.getPackages(distName))[distName];
-    if (!dist) return null;
-    const suites = Object.keys(dist);
-    const suiteData = suites.map(suite => {
-      const Packages = Object.keys(dist[suite]).map(arch => dist[suite][arch].map(packageInfo => packageInfo.control)).flat();
-      return {
-        Suite: suite,
-        Archs: Object.keys(dist[suite]),
-        Packages
-      };
-    });
-
-    return {
-      dist: distName,
-      suites,
-      archs: [...(new Set(suiteData.map(suite => suite.Archs).flat()))],
-      suiteData,
-    };
-  }
-
-  public async getAllDistribuitions() {
-    const dist = await this.getPackages();
-    return (await Promise.all(Object.keys(dist).map(dist => this.getDistribuition(dist)))).flat().filter(Boolean);
-  }
-
-  public async getPackageInfo(info: {dist: string, suite?: string, arch?: string, packageName?: string, version?: string}) {
-    const packageDateObject: {[k: string]: {[l: string]: {[a: string]: DebianPackage.debianControl[]}}} = {};
-    const distData = await this.getPackages(info.dist, info.suite);
-    for (const dist in distData) {
-      if (info.dist && info.dist !== dist) continue;
-      packageDateObject[dist] = {};
-      for (const suite in distData[dist]) {
-        if (info.suite && info.suite !== suite) continue;
-        packageDateObject[dist][suite] = {};
-        for (const arch in distData[dist][suite]) {
-          if (info.arch && info.arch !== arch) continue;
-          packageDateObject[dist][suite][arch] = distData[dist][suite][arch].map(pkg => pkg.control).filter(pkg => (!info.packageName || pkg.Package === info.packageName) && (!info.version || pkg.Version === info.version));
-        }
-      }
-    }
-
-    if (info.dist) {
-      const dist = packageDateObject[info.dist];
-      if (info.suite) {
-        const suite = dist[info.suite];
-        if (info.arch) {
-          const arch = suite[info.arch];
-          if (info.packageName) return arch.find(pkg => pkg.Package === info.packageName && (!info.version || pkg.Version === info.version));
-          return arch;
-        }
-      }
-      return dist;
-    }
-    return packageDateObject;
-  }
-
-  public async getPackageStream(distribuition: string, suite: string, arch: string, packageName: string, version: string) {
-    const dist = (await this.getPackages(distribuition))[distribuition];
-    if (!dist) throw new Error("Distribuition not exists");
-    if (!dist[suite]) throw new Error("Suite not exists");
-    if (!dist[suite][arch]) throw new Error("Arch not exists");
-    const packageData = dist[suite][arch].find(pkg => pkg.control.Package === packageName && pkg.control.Version === version);
-    if (!packageData) throw new Error("Package not exists");
-    return Promise.resolve(packageData.getStream()).then(stream => ({control: packageData.control, repository: packageData.repositoryConfig, stream}));
-  }
-
-  public async createPackages(options?: {compress?: "gzip" | "xz", writeStream?: Writable, singlePackages?: boolean, dist?: string, package?: string, arch?: string, suite?: string}) {
-    const distribuition = await this.getPackages(options?.dist);
-    const rawWrite = new Readable({read(){}});
-    let size = 0, addbreak = false, hash: ReturnType<typeof extendsCrypto.createHashAsync>|undefined;
-    if (options?.compress === "gzip") {
-      const gzip = rawWrite.pipe(createGzip({level: 9}));
-      if (options?.writeStream) gzip.pipe(options.writeStream);
-      hash = extendsCrypto.createHashAsync("all", gzip);
-      gzip.on("data", (chunk) => size += chunk.length);
-    } else if (options?.compress === "xz") {
-      const lzma = rawWrite.pipe(lzmaCompressor());
-      if (options?.writeStream) lzma.pipe(options.writeStream);
-      hash = extendsCrypto.createHashAsync("all", lzma);
-      lzma.on("data", (chunk) => size += chunk.length);
-    } else {
-      if (options?.writeStream) rawWrite.pipe(options.writeStream);
-      hash = extendsCrypto.createHashAsync("all", rawWrite);
-      rawWrite.on("data", (chunk) => size += chunk.length);
-    }
-
-    for (const dist in distribuition) {
-      if (options?.dist && options.dist !== dist) continue;
-      const suites = distribuition[dist];
-      for (const suite in suites) {
-        if (options?.suite && options.suite !== suite) continue;
-        const archs = suites[suite];
-        for (const arch in archs) {
-          if (arch !== "all" && (options?.arch && options.arch !== arch)) continue;
-          const packages = archs[arch];
-          for (const {control} of packages) {
-            if (!control.Size) continue;
-            if (!(control.SHA1 || control.SHA256 || control.MD5sum)) continue;
-            if (options?.package && options.package !== control.Package) continue;
-            if (addbreak) rawWrite.push("\n\n"); else addbreak = true;
-            control["Filename"] = poolLocationPackage(dist, suite, arch, control.Package, control.Version);
-            const Data = Object.keys(control).map(key => `${key}: ${control[key]}`);
-            rawWrite.push(Data.join("\n"));
-            if (options?.singlePackages) break;
-          }
-        }
-      }
-    }
-
-    rawWrite.push(null);
-    if (hash) return hash.then(hash => ({...hash, size}));
-    return null;
-  }
 }
