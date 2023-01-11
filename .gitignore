@@ -1,6 +1,7 @@
 .repoTest/
 thunder-tests
 *.deb
+repoconfig.yml
 
 # Ingore node folders
 node_modules/

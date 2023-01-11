@@ -151,4 +151,4 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
       console.log("Complete load repository '%s'", distName);
     }
   }
-}).parseAsync();
+}).command("packages", "Maneger packages in Database", yargs => yargs.strictCommands().command("show", "List add packages", async yargs => {}).command("load", "Update or add new packages to Database", async yargs => {})).parseAsync();

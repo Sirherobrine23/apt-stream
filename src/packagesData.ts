@@ -44,12 +44,145 @@ export type packageManegerV2 = {
  */
 export default async function packageManeger(config: backendConfig): Promise<packageManegerV2> {
   const partialConfig: Partial<packageManegerV2> = {};
-  partialConfig.getDists = async function getDists() {
+
+  if (config["apt-config"]?.mongodb) {
+    // Connect to database
+    const mongoConfig = config["apt-config"].mongodb;
+    const mongoClient = await (new MongoClient(mongoConfig.uri, {serverApi: ServerApiVersion.v1})).connect();
+    const collection = mongoClient.db(mongoConfig.db ?? "aptStream").collection<packageSave>(mongoConfig.collection ?? "packagesData");
+
+    // Drop collection
+    if (cluster.isPrimary) {
+      if (mongoConfig.dropCollention && await collection.findOne()) {
+        await collection.drop();
+        console.log("Drop collection: %s", mongoConfig.collection ?? "packagesData");
+      }
+    }
+
+    partialConfig.addPackage = async function addPackage(repo) {
+      const existsPackage = await collection.findOne({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture});
+      if (existsPackage) throw new Error(format("Package (%s/%s: %s) already exists!", repo.control.Package, repo.control.Version, repo.control.Architecture));
+      await collection.insertOne(repo);
+      console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
+    }
+
+    partialConfig.deletePackage = async function deletePackage(repo) {
+      const packageDelete = (await collection.findOneAndDelete({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture}))?.value;
+      if (!packageDelete) throw new Error("Package not found!");
+      console.info("Deleted '%s', version: %s, Arch: %s, from %s/%s", packageDelete.control.Package, packageDelete.control.Version, packageDelete.control.Architecture, packageDelete.dist, packageDelete.suite);
+      return packageDelete;
+    }
+
+    partialConfig.existsDist = async function existsDist(dist) {
+      return (await collection.findOne({dist})) ? true : false;
+    }
+
+    partialConfig.existsSuite = async function existsSuite(dist, suite) {
+      return (await collection.findOne({dist, suite})) ? true : false;
+    }
+
+    partialConfig.getDists = async function getDists() {
+      return collection.distinct("dist");
+    }
+
+    partialConfig.getDistInfo = async function getDistInfo(dist) {
+      const packages = await collection.find({dist}).toArray();
+      if (!packages.length) throw new Error("Dist not found!");
+      return {
+        packagesCount: packages.length,
+        arch: [...new Set(packages.map((p) => p.control.Architecture))],
+        packagesName: [...new Set(packages.map((p) => p.control.Package))],
+        suites: [...new Set(packages.map((p) => p.suite))]
+      };
+    }
+
+    // Packages
+    function fixPackage(data: packageSave): packageSave {
+      if (!data.restoreFileStream) throw new Error("cannot restore file stream!");
+      data.getFileStream = async function getFileStream() {
+        if (data.restoreFileStream.fileUrl) return coreUtils.httpRequest.pipeFetch(data.restoreFileStream.fileUrl);
+        if (data.restoreFileStream.from === "google_drive" && data.repository.from === "google_drive") {
+          const { appSettings } = data.repository;
+          const googleDrive = await coreUtils.googleDriver.GoogleDriver(appSettings.client_id, appSettings.client_secret, {token: appSettings.token});
+          return googleDrive.getFileStream(data.restoreFileStream.fileId);
+        } else if (data.restoreFileStream.from === "oci" && data.repository.from === "oci") {
+          const oci = await coreUtils.DockerRegistry(data.repository.image);
+          return new Promise((done, reject) => {
+            oci.blobLayerStream(data.restoreFileStream.digest).then((stream) => {
+              stream.pipe(tar.list({
+                filter: (path) => path === data.restoreFileStream.fileName,
+                onentry: (entry) => done(entry as any)
+              }))
+            }).catch(reject);
+          });
+        }
+        throw new Error("Cannot restore file stream!");
+      }
+      return data;
+    }
+    partialConfig.getPackages = async function getPackages(dist, suite, Package, Arch, Version) {
+      const doc: Filter<packageSave> = {};
+      if (dist) {
+        if (!await partialConfig.existsDist(dist)) throw new Error("Distribution not found!");
+        doc.dist = dist;
+      }
+      if (suite) {
+        if (!await partialConfig.existsSuite(dist, suite)) throw new Error("Suite/Component not found!");
+        doc.suite = suite;
+      }
+      if (Package) doc["control.Package"] = Package;
+      if (Arch) doc["control.Architecture"] = Arch;
+      if (Version) doc["control.Version"] = Version;
+      const packageInfo = await collection.find(doc).toArray();
+      if (!packageInfo) throw new Error("Package not found!");
+      return packageInfo.map(fixPackage);
+    }
+  } else {
+    // Internal Object
+    let packagesArray: packageSave[] = [];
+
+    // Add package to array
+    partialConfig.addPackage = async function addPackage(repo) {
+      const existsPackage = packagesArray.find((x) => x.control.Package === repo.control.Package && x.control.Version === repo.control.Version && x.control.Architecture === repo.control.Architecture && x.dist === repo.dist && x.suite === repo.suite && x.repository === repo.repository);
+      if (existsPackage) throw new Error("Package already exists!");
+      packagesArray.push(repo);
+      console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
+    }
+
+    // Delete package
+    partialConfig.deletePackage = async function deletePackage(repo) {
+      const index = packagesArray.findIndex((x) => x.control.Package === repo.control.Package && x.control.Version === repo.control.Version && x.control.Architecture === repo.control.Architecture && x.dist === repo.dist && x.suite === repo.suite && x.repository === repo.repository);
+      if (index === -1) throw new Error("Package not found!");
+      const packageDelete = packagesArray.splice(index, 1).at(-1);
+      console.info("Deleted '%s', version: %s, Arch: %s, from %s/%s", packageDelete.control.Package, packageDelete.control.Version, packageDelete.control.Architecture, packageDelete.dist, packageDelete.suite);
+      return packageDelete;
+    }
+
+    // Exists
+    partialConfig.existsDist = async function existsDist(dist) {
+      return packagesArray.find(x => x.dist === dist) ? true : false;
+    }
+    partialConfig.existsSuite = async function existsSuite(dist, suite) {
+      if (await partialConfig.existsDist(dist)) return packagesArray.find(x => x.dist === dist && x.suite === suite) ? true : false;
+      return false;
+    }
+
+    // Packages
+    partialConfig.getPackages = async function getPackages(dist, suite, Package, Arch, Version) {
+      if (dist && !await partialConfig.existsDist(dist)) throw new Error("Distribution not found!");
+      if (suite && !await partialConfig.existsSuite(dist, suite)) throw new Error("Suite/Component not found!");
+      const packageInfo = packagesArray.filter(x => (!dist || x.dist === dist) && (!suite || x.suite === suite) && (!Package || x.control.Package === Package) && (!Arch || x.control.Architecture === Arch) && (!Version || x.control.Version === Version));
+      if (!packageInfo.length) throw new Error("Package not found!");
+      return packageInfo;
+    }
+  }
+
+  if (!partialConfig.getDists) partialConfig.getDists = async function getDists() {
     const packages = await partialConfig.getPackages();
     return [...new Set(packages.map(U => U.dist))];
   }
 
-  partialConfig.getDistInfo = async function getDistInfo(dist: string) {
+  if (!partialConfig.getDistInfo) partialConfig.getDistInfo = async function getDistInfo(dist: string) {
     const packages = await partialConfig.getPackages(dist);
     return {
       packagesCount: packages.length,
@@ -320,126 +453,6 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     }
 
     throw new Error(`Unknown repository from: ${(repository as any)?.from ?? "undefined"}`);
-  }
-
-  if (config["apt-config"]?.mongodb) {
-    // Connect to database
-    const mongoConfig = config["apt-config"].mongodb;
-    const mongoClient = await (new MongoClient(mongoConfig.uri, {serverApi: ServerApiVersion.v1})).connect();
-    const collection = mongoClient.db(mongoConfig.db ?? "aptStream").collection<packageSave>(mongoConfig.collection ?? "packagesData");
-
-    // Drop collection
-    if (cluster.isPrimary) {
-      if (mongoConfig.dropCollention && await collection.findOne()) {
-        await collection.drop();
-        console.log("Drop collection: %s", mongoConfig.collection ?? "packagesData");
-      }
-    }
-
-    // Add package to database
-    partialConfig.addPackage = async function addPackage(repo) {
-      const existsPackage = await collection.findOne({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture});
-      if (existsPackage) throw new Error(format("Package (%s/%s: %s) already exists!", repo.control.Package, repo.control.Version, repo.control.Architecture));
-      await collection.insertOne(repo);
-      console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
-    }
-
-    // Delete package
-    partialConfig.deletePackage = async function deletePackage(repo) {
-      const packageDelete = (await collection.findOneAndDelete({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture}))?.value;
-      if (!packageDelete) throw new Error("Package not found!");
-      console.info("Deleted '%s', version: %s, Arch: %s, from %s/%s", packageDelete.control.Package, packageDelete.control.Version, packageDelete.control.Architecture, packageDelete.dist, packageDelete.suite);
-      return packageDelete;
-    }
-
-    // Exists
-    partialConfig.existsDist = async function existsDist(dist) {
-      return (await collection.findOne({dist})) ? true : false;
-    }
-    partialConfig.existsSuite = async function existsSuite(dist, suite) {
-      if (await partialConfig.existsDist(dist)) return (await collection.findOne({dist, suite})) ? true : false;
-      return false;
-    }
-
-    // Packages
-    function fixPackage(data: packageSave): packageSave {
-      if (!data.restoreFileStream) throw new Error("cannot restore file stream!");
-      data.getFileStream = async function getFileStream() {
-        if (data.restoreFileStream.fileUrl) return coreUtils.httpRequest.pipeFetch(data.restoreFileStream.fileUrl);
-        if (data.restoreFileStream.from === "google_drive" && data.repository.from === "google_drive") {
-          const { appSettings } = data.repository;
-          const googleDrive = await coreUtils.googleDriver.GoogleDriver(appSettings.client_id, appSettings.client_secret, {token: appSettings.token});
-          return googleDrive.getFileStream(data.restoreFileStream.fileId);
-        } else if (data.restoreFileStream.from === "oci" && data.repository.from === "oci") {
-          const oci = await coreUtils.DockerRegistry(data.repository.image);
-          return new Promise((done, reject) => {
-            oci.blobLayerStream(data.restoreFileStream.digest).then((stream) => {
-              stream.pipe(tar.list({
-                filter: (path) => path === data.restoreFileStream.fileName,
-                onentry: (entry) => done(entry as any)
-              }))
-            }).catch(reject);
-          });
-        }
-        throw new Error("Cannot restore file stream!");
-      }
-      return data;
-    }
-    partialConfig.getPackages = async function getPackages(dist, suite, Package, Arch, Version) {
-      const doc: Filter<packageSave> = {};
-      if (dist) {
-        if (!await partialConfig.existsDist(dist)) throw new Error("Distribution not found!");
-        doc.dist = dist;
-      }
-      if (suite) {
-        if (!await partialConfig.existsSuite(dist, suite)) throw new Error("Suite/Component not found!");
-        doc.suite = suite;
-      }
-      if (Package) doc["control.Package"] = Package;
-      if (Arch) doc["control.Architecture"] = Arch;
-      if (Version) doc["control.Version"] = Version;
-      const packageInfo = await collection.find(doc).toArray();
-      if (!packageInfo) throw new Error("Package not found!");
-      return packageInfo.map(fixPackage);
-    }
-  } else {
-    // Internal Object
-    let packagesArray: packageSave[] = [];
-
-    // Add package to array
-    partialConfig.addPackage = async function addPackage(repo) {
-      const existsPackage = packagesArray.find((x) => x.control.Package === repo.control.Package && x.control.Version === repo.control.Version && x.control.Architecture === repo.control.Architecture && x.dist === repo.dist && x.suite === repo.suite && x.repository === repo.repository);
-      if (existsPackage) throw new Error("Package already exists!");
-      packagesArray.push(repo);
-      console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
-    }
-
-    // Delete package
-    partialConfig.deletePackage = async function deletePackage(repo) {
-      const index = packagesArray.findIndex((x) => x.control.Package === repo.control.Package && x.control.Version === repo.control.Version && x.control.Architecture === repo.control.Architecture && x.dist === repo.dist && x.suite === repo.suite && x.repository === repo.repository);
-      if (index === -1) throw new Error("Package not found!");
-      const packageDelete = packagesArray.splice(index, 1).at(-1);
-      console.info("Deleted '%s', version: %s, Arch: %s, from %s/%s", packageDelete.control.Package, packageDelete.control.Version, packageDelete.control.Architecture, packageDelete.dist, packageDelete.suite);
-      return packageDelete;
-    }
-
-    // Exists
-    partialConfig.existsDist = async function existsDist(dist) {
-      return packagesArray.find(x => x.dist === dist) ? true : false;
-    }
-    partialConfig.existsSuite = async function existsSuite(dist, suite) {
-      if (await partialConfig.existsDist(dist)) return packagesArray.find(x => x.dist === dist && x.suite === suite) ? true : false;
-      return false;
-    }
-
-    // Packages
-    partialConfig.getPackages = async function getPackages(dist, suite, Package, Arch, Version) {
-      if (dist && !await partialConfig.existsDist(dist)) throw new Error("Distribution not found!");
-      if (suite && !await partialConfig.existsSuite(dist, suite)) throw new Error("Suite/Component not found!");
-      const packageInfo = packagesArray.filter(x => (!dist || x.dist === dist) && (!suite || x.suite === suite) && (!Package || x.control.Package === Package) && (!Arch || x.control.Architecture === Arch) && (!Version || x.control.Version === Version));
-      if (!packageInfo.length) throw new Error("Package not found!");
-      return packageInfo;
-    }
   }
 
   // Return functions

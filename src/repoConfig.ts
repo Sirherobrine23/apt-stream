@@ -149,7 +149,7 @@ export async function getConfig(config: string) {
   if (configData["apt-config"]) {
     const rootData = configData["apt-config"];
     fixedConfig["apt-config"].portListen = rootData.portListen ?? 3000;
-    fixedConfig["apt-config"].saveFiles = rootData.saveFiles ?? false;
+    fixedConfig["apt-config"].saveFiles = rootData.saveFiles ?? true;
     if (rootData.poolPath) fixedConfig["apt-config"].poolPath = rootData.poolPath;
     if (fixedConfig["apt-config"].poolPath && !await extendFs.exists(fixedConfig["apt-config"].poolPath)) await fs.mkdir(fixedConfig["apt-config"].poolPath, {recursive: true});
     if (rootData.codename) fixedConfig["apt-config"].codename = rootData.codename;

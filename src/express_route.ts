@@ -27,6 +27,7 @@ export default async function initApp(config: string) {
   });
 
   // Info
+  const createTime = Date.now();
   app.get("/", ({res}) => {
     return res.json({
       cluster: cluster.worker?.id ?? "No clustered",
@@ -34,6 +35,8 @@ export default async function initApp(config: string) {
       hostArch: process.arch,
       hostPlatform: process.platform,
       nodeVersion: process.version,
+      uptime: Date.now() - createTime,
+      isUptime: parseInt(`${os.uptime() * 1000}`),
     });
   });
 
