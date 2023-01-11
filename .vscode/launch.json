@@ -11,8 +11,12 @@
       "internalConsoleOptions": "openOnSessionStart",
       "skipFiles": ["<node_internals>/**", "node_modules/**"],
       "cwd": "${workspaceRoot}",
-      "runtimeExecutable": "ts-node",
-      "args": ["src/index.ts", "server"]
+      "runtimeExecutable": "node",
+      "args": ["src/index.js", "server", "--cpus=0"],
+      "preLaunchTask": {
+        "type": "npm",
+        "script": "build"
+      }
     }
   ]
 }

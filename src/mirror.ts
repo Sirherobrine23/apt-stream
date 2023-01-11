@@ -82,7 +82,6 @@ export async function getPackages(uri: string, options: {dist: string, suite?: s
   const hashs: {file: string, Package: DebianPackage.debianControl}[] = [];
   async function addPackages(dist: string, file: string, fn?: (data: DebianPackage.debianControl) => void) {
     const urlRequest = `${uri}/dists/${dist}/${file}`;
-    console.log(`Requesting ${urlRequest}`);
     await new Promise<void>(async (done, reject) => {
       const stream = (urlRequest.endsWith(".gz")||urlRequest.endsWith(".xz")) ? (await httpRequest.pipeFetch(urlRequest)).pipe(urlRequest.endsWith(".gz") ? zlib.createGunzip() : lzmaDecompressor()) : await httpRequest.pipeFetch(urlRequest);
       stream.on("error", (err: any) => {
@@ -92,14 +91,14 @@ export async function getPackages(uri: string, options: {dist: string, suite?: s
           reject(err);
         }
       });
-      let data = "";
+      let data: string;
       stream.pipe(new Writable({
         final(callback) {
           done();
           callback();
         },
         write(chunkR, encoding, callback) {
-          data = data + (encoding === "binary" ? chunkR.toString("utf8") : Buffer.from(chunkR).toString("utf8"));
+          data = (data ?? "") + (encoding === "binary" ? chunkR.toString("utf8") : Buffer.from(chunkR).toString("utf8"));
           data.split(/^\n/).forEach((v) => {
             if (v.trim()) {
               data = data.replace(v, "");
