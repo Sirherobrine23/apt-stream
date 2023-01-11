@@ -4,10 +4,10 @@ import { MongoClient, ServerApiVersion, Filter } from "mongodb";
 import { apt_config, backendConfig, repository } from "./repoConfig.js";
 import { getPackages as mirror } from "./mirror.js";
 import { Readable } from "node:stream";
+import { format } from "node:util";
 import cluster from "node:cluster";
 import path from "node:path";
 import tar from "tar";
-import { format } from "node:util";
 
 export type packageSave = {
   dist: string,
@@ -365,15 +365,12 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     function fixPackage(data: packageSave): packageSave {
       if (!data.restoreFileStream) throw new Error("cannot restore file stream!");
       data.getFileStream = async function getFileStream() {
-        if (data.restoreFileStream.from === "github_release"|| data.restoreFileStream.from === "github_tree") return coreUtils.httpRequest.pipeFetch(data.restoreFileStream.url);
-        else if (data.restoreFileStream.from === "google_drive" && data.repository.from === "google_drive") {
-          const googleDriver = await coreUtils.googleDriver.GoogleDriver(data.repository.appSettings.client_id, data.repository.appSettings.client_secret, {token: data.repository.appSettings.token});
-          return googleDriver.getFileStream(data.restoreFileStream.fileId);
-        } else if (data.restoreFileStream.from === "oracle_bucket" && data.repository.from === "oracle_bucket") {
-          const oracleBucket = await coreUtils.oracleBucket(data.repository.region as any, data.repository.bucketName, data.repository.bucketNamespace, data.repository.auth);
-          return oracleBucket.getFileStream(data.restoreFileStream.fileName);
-        } else if (data.restoreFileStream.from === "mirror" && data.repository.from === "mirror") return coreUtils.httpRequest.pipeFetch(data.restoreFileStream.fileUrl);
-        else if (data.restoreFileStream.from === "oci" && data.repository.from === "oci") {
+        if (data.restoreFileStream.fileUrl) return coreUtils.httpRequest.pipeFetch(data.restoreFileStream.fileUrl);
+        if (data.restoreFileStream.from === "google_drive" && data.repository.from === "google_drive") {
+          const { appSettings } = data.repository;
+          const googleDrive = await coreUtils.googleDriver.GoogleDriver(appSettings.client_id, appSettings.client_secret, {token: appSettings.token});
+          return googleDrive.getFileStream(data.restoreFileStream.fileId);
+        } else if (data.restoreFileStream.from === "oci" && data.repository.from === "oci") {
           const oci = await coreUtils.DockerRegistry(data.repository.image);
           return new Promise((done, reject) => {
             oci.blobLayerStream(data.restoreFileStream.digest).then((stream) => {

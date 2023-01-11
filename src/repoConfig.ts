@@ -84,6 +84,9 @@ export type backendConfig = Partial<{
       collection?: string,
       /** On connect to database drop collection to run in empty data */
       dropCollention?: boolean
+    },
+    packagesOptions?: {
+      uniqueVersion?: boolean,
     }
   },
   repositories: {
@@ -136,7 +139,11 @@ export async function getConfig(config: string) {
   if (typeof configData !== "object") throw new Error("Invalid config file");
 
   const fixedConfig: backendConfig = {
-    "apt-config": {},
+    "apt-config": {
+      packagesOptions: {
+        uniqueVersion: configData["apt-config"]?.packagesOptions?.uniqueVersion ?? false
+      }
+    },
     repositories: {}
   };
   if (configData["apt-config"]) {
