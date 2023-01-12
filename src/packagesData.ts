@@ -197,40 +197,27 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     const rootPool = aptConfig["apt-config"]?.poolPath ?? path.join(process.cwd(), "pool");
     if (repository.from === "mirror") {
       // Ingore fast load data for low ram memory
-      for (const repoDistName in repository.dists) {
-        const distInfo = repository.dists[repoDistName];
-        const packagesData: Awaited<ReturnType<typeof mirror>> = [];
-        if (!distInfo.suites) await mirror(repository.uri, {dist: distName}).then(U => packagesData.push(...U));
-        else for (const suite of distInfo.suites) await mirror(repository.uri, {dist: repoDistName, suite}).then(U => packagesData.push(...U));
-        const partialPromises = packagesData.map(({Package: control}) => {
-          const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
-          const getStream = async () => {
-            if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
-            if (saveFile) {
-              const mainPath = path.resolve(filePool, "..");
-              if (!await extendFs.exists(mainPath)) await fs.mkdir(mainPath, {recursive: true});
-              const fileStream = await httpRequest.pipeFetch(control.Filename);
-              fileStream.pipe(createWriteStream(filePool));
-              return fileStream;
-            }
-            return httpRequest.pipeFetch(control.Filename);
+      for (const mirrorName in repository.dists) {
+        const distInfo = repository.dists[mirrorName];
+        const packages: Awaited<ReturnType<typeof mirror>>[number]["packages"] = []
+        if (distInfo.suites) for (const component of distInfo.suites) await mirror(repository.uri, {dist: mirrorName, component}).then(x => x.forEach(y => packages.push(...y.packages)));
+        else await mirror(repository.uri, {dist: mirrorName}).then(x => x.forEach(y => packages.push(...y.packages)));
+        for (const packageInfo of packages) await partialConfig.addPackage({
+          dist: distName,
+          suite: repository.suite ?? "main",
+          repository,
+          control: packageInfo,
+          getFileStream() {
+            return httpRequest.pipeFetch(packageInfo.Filename);
+          },
+          aptConfig: packageAptConfig,
+          restoreFileStream: {
+            from: "mirror",
+            fileUrl: repository.uri,
           }
-          return partialConfig.addPackage({
-            dist: distName,
-            suite: repository.suite ?? "main",
-            repository: repository,
-            control,
-            aptConfig: packageAptConfig ?? aptConfig["apt-config"],
-            getFileStream: getStream,
-            restoreFileStream: {
-              from: "mirror",
-              fileUrl: control.Filename,
-            }
-          }).catch(err => err);
-        });
-
-        return Promise.all(partialPromises);
+        }).catch(err => {});
       }
+      return;
     } else if (repository.from === "oci") {
       const registry = await DockerRegistry.Manifest.Manifest(repository.image, repository.platfom_target);
       return registry.layersStream((data) => {
@@ -238,7 +225,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
         data.stream.pipe(tar.list({
           async onentry(entry) {
             if (!entry.path.endsWith(".deb")) return null;
-            const control = await DebianPackage.extractControl(entry as any);
+            const control = await DebianPackage.getControl(entry as any);
             const suite = repository.suite ?? "main";
             async function getStream() {
               const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
@@ -285,7 +272,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
         })));
         return Promise.all(release.map(async release => Promise.all(release.assets.map(async ({browser_download_url, name}) => {
           if (!name.endsWith(".deb")) return null;
-          const control = await DebianPackage.extractControl(await httpRequest.pipeFetch(browser_download_url));
+          const control = await DebianPackage.getControl(await httpRequest.pipeFetch(browser_download_url));
           const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
           const getStream = async () => {
             if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
@@ -315,7 +302,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
       const release = await httpRequestGithub.getRelease({owner: repository.owner, repository: repository.repository, token: repository.token, peer: repository.assetsLimit, all: false});
       return Promise.all(release.map(async release => Promise.all(release.assets.map(async ({browser_download_url, name}) => {
         if (!name.endsWith(".deb")) return null;
-        const control = await DebianPackage.extractControl(await httpRequest.pipeFetch(browser_download_url));
+        const control = await DebianPackage.getControl(await httpRequest.pipeFetch(browser_download_url));
         const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
         const getStream = async () => {
           if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
@@ -356,7 +343,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
       }).filter(({path, type}) => path.endsWith(".deb") && type === "blob");
       return Promise.all(filtedTree.map(async ({path: filePath}) => {
         const downloadUrl = `https://raw.githubusercontent.com/${repository.owner}/${repository.repository}/${repository.tree}/${filePath}`;
-        const control = await DebianPackage.extractControl(await httpRequest.pipeFetch(downloadUrl));
+        const control = await DebianPackage.getControl(await httpRequest.pipeFetch(downloadUrl));
         const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
         const getStream = async () => {
           if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
@@ -395,7 +382,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
       });
       const files = (repository.folderId ? (await Promise.all(repository.folderId.map(async folderId => await googleDriver.listFiles(folderId)))).flat() : await googleDriver.listFiles());
       return Promise.all(files.filter(({name, isTrashedFile}) => !isTrashedFile && name.endsWith(".deb")).map(async fileData => {
-        const control = await DebianPackage.extractControl(await googleDriver.getFileStream(fileData.id));
+        const control = await DebianPackage.getControl(await googleDriver.getFileStream(fileData.id));
         const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
         const getStream = async () => {
           if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);
@@ -424,7 +411,7 @@ export default async function packageManeger(config: backendConfig): Promise<pac
     } else if (repository.from === "oracle_bucket") {
       const oracleBucket = await coreUtils.oracleBucket(repository.region as any, repository.bucketName, repository.bucketNamespace, repository.auth);
       return Promise.all((await oracleBucket.fileList()).filter(({name}) => name.endsWith(".deb")).map(async fileData => {
-        const control = await DebianPackage.extractControl(await oracleBucket.getFileStream(fileData.name));
+        const control = await DebianPackage.getControl(await oracleBucket.getFileStream(fileData.name));
         const filePool = path.join(rootPool, control.Package.slice(0, 1), `${control.Package}_${control.Architecture}_${control.Version}.deb`);
         const getStream = async () => {
           if (saveFile && await extendFs.exists(filePool)) return createReadStream(filePool);

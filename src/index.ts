@@ -97,7 +97,6 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     demandOption: false,
     description: "Number of cpus to use in Cluster"
   }).parseSync();
-  console.log("Starting server...");
   process.on("unhandledRejection", err => console.error(err));
   process.on("uncaughtException", err => console.error(err));
   const { app, packageConfig, packageManeger } = await repo(Object.keys(process.env).find(key => key.startsWith("APT_STREAM")) ? `env:${Object.keys(process.env).find(key => key.startsWith("APT_STREAM"))}` : options.cofigPath);
@@ -138,7 +137,7 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
       else if (signal === "SIGTERM") return console.log("Worker %d was terminated", worker?.id ?? "No ID");
       console.log("Worker %d died with code: %s, Signal: %s", worker?.id ?? "No ID", code, signal ?? "No Signal");
       cluster.fork();
-    }).on("online", worker => console.log("Worker %d is online", worker?.id ?? "No ID"));
+    });
   } else {
     console.warn("Running without cluster, this is not recommended for production");
     app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
@@ -147,8 +146,8 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
   for (const distName in packageConfig.repositories) {
     const dist = packageConfig.repositories[distName];
     for (const target of dist.targets) {
-      await packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).catch(err => console.error(String(err)));
-      console.log("Complete load repository '%s'", distName);
+      console.log("Load repository '%s'", distName);
+      await packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).then(() => console.log("Complete load repository '%s'", distName)).catch(err => console.error(String(err)));
     }
   }
 }).command("packages", "Maneger packages in Database", yargs => yargs.strictCommands().command("show", "List add packages", async yargs => {}).command("load", "Update or add new packages to Database", async yargs => {})).parseAsync();
