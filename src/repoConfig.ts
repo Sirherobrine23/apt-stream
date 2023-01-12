@@ -79,7 +79,7 @@ export type backendConfig = Partial<{
       passphrase?: string
     },
     mongodb?: {
-      uri: string,
+      uri?: string,
       db?: string,
       collection?: string,
       /** On connect to database drop collection to run in empty data */
@@ -107,6 +107,7 @@ export async function saveConfig(filePath: string, config: backendConfig) {
 
 export async function getConfig(config: string) {
   let configData: backendConfig, avaiableToDirname = true;
+  if (typeof config !== "string") throw new TypeError("Invalid config input");
   if (config.startsWith("http")) {
     avaiableToDirname = false;
     const data = (await httpRequest.bufferFetch(config)).data;

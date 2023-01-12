@@ -30,6 +30,7 @@ export type packageManegerV2 = {
   existsDist: (dist: string) => Promise<boolean>,
   existsSuite: (dist: string, suite: string) => Promise<boolean>,
   getDists: () => Promise<string[]>,
+  close: () => Promise<void>,
   getDistInfo: (dist: string) => Promise<{
     packagesCount: number,
     arch: string[],
@@ -42,34 +43,46 @@ export type packageManegerV2 = {
  * Maneger and Load packages to Database or internal object (Nodejs Heap Memory, if large data use Database)
  * @returns
  */
-export default async function packageManeger(config: backendConfig): Promise<packageManegerV2> {
+export default async function packageManeger(config: backendConfig, option?: {showPackagesModifications?: boolean, dontReturnError?: boolean}): Promise<packageManegerV2> {
   const partialConfig: Partial<packageManegerV2> = {};
-
-  if (config["apt-config"]?.mongodb) {
+  partialConfig.close = async function close() {}
+  if (config["apt-config"]?.mongodb?.uri) {
     // Connect to database
     const mongoConfig = config["apt-config"].mongodb;
     const mongoClient = await (new MongoClient(mongoConfig.uri, {serverApi: ServerApiVersion.v1})).connect();
     const collection = mongoClient.db(mongoConfig.db ?? "aptStream").collection<packageSave>(mongoConfig.collection ?? "packagesData");
 
+    partialConfig.close = async function close() {
+      await mongoClient.close();
+    }
+
     // Drop collection
     if (cluster.isPrimary) {
       if (mongoConfig.dropCollention && await collection.findOne()) {
         await collection.drop();
-        console.log("Drop collection: %s", mongoConfig.collection ?? "packagesData");
+        if (option?.showPackagesModifications) console.log("Drop collection: %s", mongoConfig.collection ?? "packagesData");
       }
     }
 
     partialConfig.addPackage = async function addPackage(repo) {
       const existsPackage = await collection.findOne({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture});
-      if (existsPackage) throw new Error(format("Package (%s/%s: %s) already exists!", repo.control.Package, repo.control.Version, repo.control.Architecture));
+      if (existsPackage) {
+        const message = format("Package (%s/%s: %s) already exists!", repo.control.Package, repo.control.Version, repo.control.Architecture);
+        if (option?.showPackagesModifications) console.log(message);
+        throw new Error(message);
+      }
       await collection.insertOne(repo);
-      console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
+      if (option?.showPackagesModifications) console.log("Added '%s', version: %s, Arch: %s, in to %s/%s", repo.control.Package, repo.control.Version, repo.control.Architecture, repo.dist, repo.suite);
     }
 
     partialConfig.deletePackage = async function deletePackage(repo) {
       const packageDelete = (await collection.findOneAndDelete({dist: repo.dist, suite: repo.suite, "control.Package": repo.control.Package, "control.Version": repo.control.Version, "control.Architecture": repo.control.Architecture}))?.value;
-      if (!packageDelete) throw new Error("Package not found!");
-      console.info("Deleted '%s', version: %s, Arch: %s, from %s/%s", packageDelete.control.Package, packageDelete.control.Version, packageDelete.control.Architecture, packageDelete.dist, packageDelete.suite);
+      if (!packageDelete) {
+        const message = format("Package (%s/%s: %s) not found!", repo.control.Package, repo.control.Version, repo.control.Architecture);
+        if (option?.showPackagesModifications) console.log(message);
+        throw new Error(message);
+      }
+      if (option?.showPackagesModifications) console.info("Deleted '%s', version: %s, Arch: %s, from %s/%s", packageDelete.control.Package, packageDelete.control.Version, packageDelete.control.Architecture, packageDelete.dist, packageDelete.suite);
       return packageDelete;
     }
 
@@ -215,7 +228,13 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "mirror",
             fileUrl: repository.uri,
           }
-        }).catch(err => {});
+        }).catch(err => {
+          if (option?.dontReturnError) {
+            if (option?.showPackagesModifications) console.error(err);
+            return null;
+          }
+          throw err;
+        });
       }
       return;
     } else if (repository.from === "oci") {
@@ -296,7 +315,13 @@ export default async function packageManeger(config: backendConfig): Promise<pac
               from: "github_release",
               fileUrl: browser_download_url,
             }
-          }).catch(err => {});
+          }).catch(err => {
+            if (option?.dontReturnError) {
+              if (option?.showPackagesModifications) console.error(err);
+              return null;
+            }
+            throw err;
+          });
         })))).then(data => data.flat(2).filter(Boolean));
       }
       const release = await httpRequestGithub.getRelease({owner: repository.owner, repository: repository.repository, token: repository.token, peer: repository.assetsLimit, all: false});
@@ -326,7 +351,13 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "github_release",
             fileUrl: browser_download_url,
           }
-        }).catch(err => {});
+        }).catch(err => {
+          if (option?.dontReturnError) {
+            if (option?.showPackagesModifications) console.error(err);
+            return null;
+          }
+          throw err;
+        });
       })))).then(data => data.flat(2).filter(Boolean));
     } else if (repository.from === "github_tree") {
       const { tree } = await httpRequestGithub.githubTree(repository.owner, repository.repository, repository.tree);
@@ -367,7 +398,13 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "github_tree",
             fileUrl: downloadUrl,
           }
-        }).catch(err => {});
+        }).catch(err => {
+          if (option?.dontReturnError) {
+            if (option?.showPackagesModifications) console.error(err);
+            return null;
+          }
+          throw err;
+        });
       }));
     } else if (repository.from === "google_drive") {
       const client_id = repository.appSettings.client_id;
@@ -406,7 +443,13 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "google_drive",
             fileId: fileData.id,
           }
-        }).catch(err => {});
+        }).catch(err => {
+          if (option?.dontReturnError) {
+            if (option?.showPackagesModifications) console.error(err);
+            return null;
+          }
+          throw err;
+        });
       }));
     } else if (repository.from === "oracle_bucket") {
       const oracleBucket = await coreUtils.oracleBucket(repository.region as any, repository.bucketName, repository.bucketNamespace, repository.auth);
@@ -435,7 +478,13 @@ export default async function packageManeger(config: backendConfig): Promise<pac
             from: "oracle_bucket",
             fileName: fileData.name,
           }
-        }).catch(err => {});
+        }).catch(err => {
+          if (option?.dontReturnError) {
+            if (option?.showPackagesModifications) console.error(err);
+            return null;
+          }
+          throw err;
+        });
       }));
     }
 

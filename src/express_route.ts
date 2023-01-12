@@ -13,32 +13,8 @@ import os from "node:os";
 
 export default async function initApp(config: string) {
   const packageConfig = await getConfig(config);
-  const packageManeger = await package_maneger(packageConfig);
-  const app = express();
-  app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({extended: true})).use((req, res, next) => {
-    res.json = data => {
-      Promise.resolve(data).then(data => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data, null, 2))).catch(next);
-      return res;
-    };
-    const cluserID = (cluster.worker?.id === 1 ? "Primary" : cluster.worker?.id) ?? "Primary";
-    console.log("[%s, cluserID: %s]: Path: %s, Method: %s, IP: %s", new Date().toISOString(), cluserID, req.path, req.method, req.ip);
-    res.on("close", () => console.log("[%s, cluserID: %s]: Path: %s, Method: %s, IP: %s, Status: %f", new Date().toISOString(), cluserID, req.path, req.method, req.ip, res.statusCode));
-    next();
-  });
-
-  // Info
-  const createTime = Date.now();
-  app.get("/", ({res}) => {
-    return res.json({
-      cluster: cluster.worker?.id ?? "No clustered",
-      cpuCores: os.cpus().length || "Unknown CPU core",
-      hostArch: process.arch,
-      hostPlatform: process.platform,
-      nodeVersion: process.version,
-      uptime: Date.now() - createTime,
-      isUptime: parseInt(`${os.uptime() * 1000}`),
-    });
-  });
+  const packageManeger = await package_maneger(packageConfig, {dontReturnError: true});
+  const app = express.Router();
 
   app.get("/pool/:dist/:suite/:package/:arch/:version/download.deb", async ({params: {dist, suite, package: packageName, arch, version}}, res, next) => {
     try {
@@ -259,9 +235,36 @@ export default async function initApp(config: string) {
     return res.setHeader("Content-Type", "application/pgp-keys").send(pubKey);
   });
 
+
+  // Info
+  const createTime = Date.now();
+  const expressApp = express().disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({extended: true})).use((req, res, next) => {
+    res.json = data => {
+      Promise.resolve(data).then(data => res.setHeader("Content-Type", "application/json").send(JSON.stringify(data, null, 2))).catch(next);
+      return res;
+    };
+    const cluserID = (cluster.worker?.id === 1 ? "Primary" : cluster.worker?.id) ?? "Primary";
+    const { path, method, ip } = req;
+    console.log("[%s, cluserID: %s]: Path: %s, Method: %s, IP: %s", Date.now(), cluserID, path, method, ip);
+    res.on("close", () => console.log("[%s, cluserID: %s]: Path: %s, Method: %s, IP: %s, Status: %f",
+    Date.now(), cluserID, path, method, ip, res.statusCode ?? 500
+    ));
+    next();
+  }).use("/apt", app).get("/", ({res}) => {
+    return res.json({
+      cluster: cluster.worker?.id ?? "No clustered",
+      cpuCores: os.cpus().length || "Unknown CPU core",
+      hostArch: process.arch,
+      hostPlatform: process.platform,
+      nodeVersion: process.version,
+      uptimeSeconds: parseInt(((Date.now() - createTime)/1000).toFixed(2)),
+      osUptimeSeconds: parseInt(os.uptime().toFixed(2)),
+    });
+  });
+
   return {
-    app,
     packageManeger,
-    packageConfig
+    packageConfig,
+    app: expressApp
   };
 }

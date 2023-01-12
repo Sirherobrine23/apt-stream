@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import { getConfig, saveConfig } from "./repoConfig.js";
 import { writeFile } from "node:fs/promises";
+import packageManeger, { packageSave } from "./packagesData.js";
+import cluster from "node:cluster";
 import openpgp from "openpgp";
 import yargs from "yargs";
 import path from "node:path";
 import repo from "./express_route.js";
 import yaml from "yaml";
 import os from "node:os";
-import cluster from "node:cluster";
+import inquirer from "inquirer";
+import ora from "ora";
 
 yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommands().alias("h", "help").option("cofig-path", {
   type: "string",
@@ -96,6 +99,12 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     alias: "C",
     demandOption: false,
     description: "Number of cpus to use in Cluster"
+  }).option("disable_package_load", {
+    type: "boolean",
+    default: false,
+    alias: "D",
+    demandOption: false,
+    description: "Disable package load if database configured"
   }).parseSync();
   process.on("unhandledRejection", err => console.error(err));
   process.on("uncaughtException", err => console.error(err));
@@ -143,11 +152,136 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
   }
 
+  if (options.disable_package_load) {
+    if (packageConfig["apt-config"]?.mongodb?.uri) return;
+    console.warn("Loadind package, database not configured");
+  }
   for (const distName in packageConfig.repositories) {
     const dist = packageConfig.repositories[distName];
-    for (const target of dist.targets) {
-      console.log("Load repository '%s'", distName);
-      await packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig).then(() => console.log("Complete load repository '%s'", distName)).catch(err => console.error(String(err)));
-    }
+    for (const target of dist.targets) await packageManeger.loadRepository(distName, target, packageConfig["apt-config"], packageConfig);
   }
-}).command("packages", "Maneger packages in Database", yargs => yargs.strictCommands().command("show", "List add packages", async yargs => {}).command("load", "Update or add new packages to Database", async yargs => {})).parseAsync();
+}).command("packages", "Maneger packages in Database", async yargs => yargs.demandCommand().strictCommands().command("show", "List add packages", async yargs => {
+  const options = yargs.parseSync();
+  const pack = await packageManeger(await getConfig(options.cofigPath));
+  const packages = await pack.getPackages();
+  for (const { control, suite, dist } of packages) console.log("\nPackage: %s/%s\n\tArchicture: %s\n\tDistribuition: %s\n\tComponent: %s", control.Package, control.Version, control.Architecture, dist, suite);
+  return pack.close();
+}).command("load", "Update or add new packages to Database", async yargs => {
+  const options = yargs.option("cleanDB", {
+    type: "boolean",
+    demandOption: false,
+    description: "Delete all packages in database",
+    default: false
+  }).parseSync();
+  const packageConfig = await getConfig(options.cofigPath);
+  const pack = await packageManeger({...packageConfig, "apt-config": {mongodb: {dropCollention: !!options.cleanDB}}}, {dontReturnError: true, showPackagesModifications: true});
+  for (const distName in packageConfig.repositories) {
+    const dist = packageConfig.repositories[distName];
+    for (const target of dist.targets) await pack.loadRepository(distName, target, packageConfig["apt-config"], packageConfig);
+  }
+  return pack.close();
+}).command("edit", "Edit packages interactive", async yargs => {
+  const options = yargs.option("distribuition", {
+    type: "string",
+    alias: "d",
+    demandOption: false,
+    description: "Distribution to edit"
+  }).option("cleanDB", {
+    type: "boolean",
+    demandOption: false,
+    description: "Delete all packages in database",
+    default: false
+  }).parseSync();
+  const packageConfig = await getConfig(options.cofigPath);
+  const pack = await packageManeger({"apt-config": {...packageConfig, mongodb: {dropCollention: !!options.cleanDB}}}, {dontReturnError: false, showPackagesModifications: true});
+  if (!!options.cleanDB) {
+    console.log("Cleaning database");
+    return pack.close();
+  }
+  async function packEdit(dist?: string) {
+    dist = dist ?? options.distribuition ?? (await inquirer.prompt({choices: await pack.getDists(), message: "Select distribuition", name: "dist", type: "list"})).dist;
+    const oraLoadPackages = ora("Loading packages").start();
+    const packages = await pack.getPackages(dist);
+    const reducePackages = packages.reduce((prev, data) => {
+      if (!prev[data.control.Package]) prev[data.control.Package] = [];
+      prev[data.control.Package].push(data);
+      return prev;
+    }, {} as {[packageName: string]: packageSave[]});
+    oraLoadPackages.succeed("Loaded packages");
+    const packageSelect = await inquirer.prompt({choices: Object.keys(reducePackages), message: "Select package", name: "package", type: "list"});
+    console.log("Package: %s", packageSelect.package);
+    const packagesArray = reducePackages[packageSelect.package];
+    const packagesIndex: number[] = await inquirer.prompt({
+      type: "checkbox",
+      name: "packages",
+      message: "Select packages",
+      choices: packagesArray.map((data, index) => ({name: `${data.control.Version} (${data.control.Architecture})`, value: index}))
+    }).then(x => x.packages);
+    if (!packagesIndex.length) return ora("No valid package selected").fail();
+    for (const packIndex of packagesIndex) {
+      const packData = packagesArray[packIndex];
+      if (!packData) return console.log("No valid package selected");
+      const action: "remove"|"edit"|"cancel" = await inquirer.prompt({
+        type: "list",
+        name: "action",
+        message: "Select action",
+        choices: [
+          {name: "Remove", value: "remove"},
+          {name: "Edit", value: "edit"},
+          {name: "Cancel", value: "cancel"}
+        ]
+      }).then(x => x.action);
+      if (action === "cancel") {
+        await ora("Canceled, no changes").fail();
+        continue;
+      } else if (action === "remove") {
+        const confirm = await inquirer.prompt({
+          type: "confirm",
+          name: "confirm",
+          message: "Are you sure you want to remove this package?"
+        }).then(x => x.confirm);
+        if (!confirm) {
+          console.log("Canceled, no changes");
+          continue;
+        }
+        await pack.deletePackage(packData);
+        console.log("Removed package");
+        continue;
+      } else if (action === "edit") {
+        const editData = await inquirer.prompt({
+          type: "editor",
+          name: "data",
+          message: "Edit package",
+          default: JSON.stringify(packData, null, 2)
+        }).then(x => JSON.parse(x.data));
+        const editProgress = ora("Editing package").start();
+        editProgress.text = "Deleting package";
+        await pack.deletePackage(packData);
+        editProgress.text = "Adding package";
+        await pack.addPackage(editData);
+        editProgress.succeed("Updated package");
+        continue;
+      }
+      throw new Error("Invalid action");
+    }
+
+    // Exit
+    const exit = await inquirer.prompt({
+      type: "confirm",
+      name: "exit",
+      message: "Do you want to exit?"
+    }).then(x => x.exit);
+    if (exit) return;
+    // Edit another dist
+    const editAnotherDist = await inquirer.prompt({
+      type: "confirm",
+      name: "editAnotherDist",
+      message: "Do you want to edit another dist?"
+    }).then(x => x.editAnotherDist);
+    if (!editAnotherDist) return packEdit(dist);
+    options.distribuition = undefined;
+    return packEdit();
+  }
+  await packEdit();
+  return pack.close();
+})).parseAsync();
