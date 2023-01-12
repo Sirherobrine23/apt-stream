@@ -3,13 +3,14 @@ import { getConfig, saveConfig } from "./repoConfig.js";
 import { writeFile } from "node:fs/promises";
 import packageManeger, { packageSave } from "./packagesData.js";
 import cluster from "node:cluster";
+import inquirer from "inquirer";
 import openpgp from "openpgp";
 import yargs from "yargs";
+import https from "node:https";
 import path from "node:path";
 import repo from "./express_route.js";
 import yaml from "yaml";
 import os from "node:os";
-import inquirer from "inquirer";
 import ora from "ora";
 
 yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommands().alias("h", "help").option("cofig-path", {
@@ -126,12 +127,19 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     });
   });
   const port = process.env.PORT ?? packageConfig["apt-config"]?.portListen ?? 3000;
+  const portListen = (message: string) => {
+    const httpsConfig = packageConfig["apt-config"]?.https;
+    if (httpsConfig?.ca && httpsConfig?.key) {
+      https.createServer({
+        ca: httpsConfig.ca,
+        key: httpsConfig.key,
+      }, app).listen(port, function() {console.log(message, this.address()?.port);});
+    } else app.listen(port, function() {console.log(message, this.address()?.port);});
+  }
   if (options.cpus > 1) {
     if (cluster.isWorker) {
       console.log("Worker %d running, PID: %f", cluster.worker?.id ?? "No ID", process.pid);
-      app.listen(port, function() {
-        console.log("Work apt Stream Port listen on %f", this.address()?.port);
-      });
+      portListen("Work apt Stream Port listen on %f");
       return;
     }
     console.log("Work master, PID %f, starting workers ...", process.pid);
@@ -149,7 +157,7 @@ yargs(process.argv.slice(2)).version(false).help().demandCommand().strictCommand
     });
   } else {
     console.warn("Running without cluster, this is not recommended for production");
-    app.listen(port, function() {console.log("Apt Stream Port listen on %f", this.address()?.port)});
+    portListen("Apt Stream Port listen on %f");
   }
 
   if (options.disable_package_load) {

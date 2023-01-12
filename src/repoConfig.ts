@@ -87,6 +87,10 @@ export type backendConfig = Partial<{
     },
     packagesOptions?: {
       uniqueVersion?: boolean,
+    },
+    https?: {
+      ca: string,
+      key: string,
     }
   },
   repositories: {

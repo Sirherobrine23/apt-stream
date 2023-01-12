@@ -2,6 +2,8 @@
 thunder-tests
 *.deb
 repoconfig.yml
+*.key
+*.pem
 
 # Ingore node folders
 node_modules/
