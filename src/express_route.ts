@@ -15,7 +15,7 @@ export default async function initApp(config: string) {
   const packageConfig = await getConfig(config);
   const packageManeger = await package_maneger(packageConfig, {dontReturnError: true});
   const app = express.Router();
-
+  app.get("/", ({res}) => res.json({}));
   app.get("/pool/:dist/:suite/:package/:arch/:version/download.deb", async ({params: {dist, suite, package: packageName, arch, version}}, res, next) => {
     try {
       const data = (await packageManeger.getPackages(dist, suite, packageName, arch, version))?.at(-1);
@@ -250,7 +250,7 @@ export default async function initApp(config: string) {
     Date.now(), cluserID, path, method, ip, res.statusCode ?? 500
     ));
     next();
-  }).use("/apt", app).get("/", ({res}) => {
+  }).get("/", ({res}) => {
     return res.json({
       cluster: cluster.worker?.id ?? "No clustered",
       cpuCores: os.cpus().length || "Unknown CPU core",
@@ -260,11 +260,12 @@ export default async function initApp(config: string) {
       uptimeSeconds: parseInt(((Date.now() - createTime)/1000).toFixed(2)),
       osUptimeSeconds: parseInt(os.uptime().toFixed(2)),
     });
-  });
+  }).use("/", app);
 
   return {
     packageManeger,
     packageConfig,
-    app: expressApp
+    Route: app,
+    app: expressApp,
   };
 }
