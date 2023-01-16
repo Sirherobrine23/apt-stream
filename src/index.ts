@@ -5,6 +5,8 @@ import { format } from "node:util";
 import coreUtils, { googleDriver } from "@sirherobrine23/coreutils";
 import inquirer from "inquirer";
 import openpgp from "openpgp";
+import express from "express";
+import Route from "./Route.js";
 import yargs from "yargs";
 import path from "node:path";
 import yaml from "yaml";
@@ -28,7 +30,10 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
     alias: "c",
     default: os.cpus().length,
   }).parseSync();
-  return console.log(options);
+  const aptRoute = await Route(options.config);
+  const app = express();
+  app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({ extended: true })).use(aptRoute.app);
+  app.listen(options.port, () => console.log("Server started on port %s", options.port));
 }).command("base64", "Convert config in base64 string", async yargs => {
   const options = yargs.strict().option("json", {
     type: "boolean",
@@ -163,7 +168,59 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
     }
 
     if (initialData.useDatabase) {
-      throw new Error("Not implemented");
+      const { dbType } = await inquirer.prompt({
+        type: "list",
+        name: "dbType",
+        message: "Database type",
+        default: "mongodb",
+        choices: [
+          "mongodb",
+          "custom"
+        ],
+      });
+      if (dbType === "mongodb") {
+        const { mongoURL, databaseName, collectionName } = await inquirer.prompt<{mongoURL: string, databaseName: string, collectionName: string}>([
+          {
+            type: "input",
+            name: "mongoURL",
+            message: "MongoDB URL",
+            default: "mongodb://localhost:27017",
+            validate(input) {
+              if (!input) return "Set URL, dont leave blank";
+              if (!(input.startsWith("mongodb://") || input.startsWith("mongodb+srv://"))) return "Invalid URL";
+              return true;
+            },
+          },
+          {
+            type: "input",
+            name: "databaseName",
+            message: "Database name",
+            default: "apt-stream",
+            validate(input) {
+              if (!input) return "Set database name, dont leave blank";
+              if (input.length > 24) return "Database name must be less than 24 characters";
+              return true;
+            }
+          },
+          {
+            type: "input",
+            name: "collectionName",
+            message: "Collection name",
+            default: "packagesData",
+            validate(input) {
+              if (!input) return "Set collection name, dont leave blank";
+              if (input.length > 64) return "Collection name must be less than 64 characters";
+              return true;
+            }
+          }
+        ]);
+        base.db = {
+          type: "mongodb",
+          url: mongoURL,
+          db: databaseName,
+          collection: collectionName
+        };
+      } else if (dbType === "custom") {} else console.warn("Invalid database type");
     }
   } else base = await configManeger(options.config);
 
@@ -197,7 +254,15 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
         {
           type: "input",
           name: "url",
-          message: "URL to repo"
+          message: "URL to repo",
+          validate(input) {
+            try {
+              new URL(input);
+              return true;
+            } catch (err) {
+              return String(err);
+            }
+          }
         },
         {
           type: "confirm",

@@ -73,13 +73,14 @@ export type aptSConfig = {
     db?: string,
     collection?: string,
   }|{
-    type: "sqlite",
-    path: string,
+    type: "internal",
+    rootPath: string,
   },
   globalAptConfig?: {
     Origin?: string,
     Label?: string,
-    urlHost?: string
+    urlHost?: string,
+    oldPackagesStyles?: boolean
   },
   repositorys: {
     [distName: string]: {
