@@ -4,7 +4,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ESNext",
-    "declaration": true,
+    "declaration": false,
     "strict": false,
     "noUnusedLocals": true,
     "forceConsistentCasingInFileNames": true,

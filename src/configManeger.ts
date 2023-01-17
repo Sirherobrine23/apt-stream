@@ -66,6 +66,8 @@ export type aptSConfig = {
       privateKey: string,
       publicKey: string,
       passphrase?: string,
+      privateKeySave?: string,
+      publicKeySave?: string,
     },
   },
   db?: {
@@ -101,19 +103,18 @@ export type aptSConfig = {
 export async function saveConfig(config: aptSConfig|Partial<aptSConfig>, file: string) {
   if (!config) throw new TypeError("config is not defined");
   if (!file) throw new TypeError("file is not defined");
-
+  config = await configManeger(config);
   if (config.server?.pgp) {
-    const priSave = config.server.pgp["privateKeySave"] as string;
-    const pubSave = config.server.pgp["publicKeySave"] as string;
-    if (priSave) {
-      await fs.writeFile(priSave, config.server.pgp.privateKey);
-      delete config.server.pgp["privateKeySave"];
-      config.server.pgp.privateKey = priSave;
+    const { privateKeySave, publicKeySave } = config.server.pgp;
+    if (privateKeySave) {
+      await fs.writeFile(privateKeySave, config.server.pgp.privateKey);
+      delete config.server.pgp.privateKeySave;
+      config.server.pgp.privateKey = privateKeySave;
     }
-    if (pubSave) {
-      await fs.writeFile(pubSave, config.server.pgp.publicKey);
-      delete config.server.pgp["publicKeySave"];
-      config.server.pgp.publicKey = pubSave;
+    if (publicKeySave) {
+      await fs.writeFile(publicKeySave, config.server.pgp.publicKey);
+      delete config.server.pgp.publicKeySave;
+      config.server.pgp.publicKey = publicKeySave;
     }
   }
 
@@ -121,46 +122,48 @@ export async function saveConfig(config: aptSConfig|Partial<aptSConfig>, file: s
 }
 
 export default configManeger;
-export async function configManeger(config?: string) {
+export async function configManeger(config?: string|Partial<aptSConfig>) {
   if (!config) throw new TypeError("config is not defined");
   let configData: Partial<aptSConfig>;
-  if (config.startsWith("http")) {
-    let remoteConfig = await coreUtils.httpRequest.bufferFetch(config);
-    try {
-      configData = yaml.parse(remoteConfig.toString());
-    } catch {
+  if (typeof config === "string") {
+    if (config.startsWith("http")) {
+      let remoteConfig = await coreUtils.httpRequest.bufferFetch(config);
       try {
-        configData = JSON.parse(remoteConfig.toString());
+        configData = yaml.parse(remoteConfig.toString());
       } catch {
-        throw new Error(format("%s is not a valid config file", config));
+        try {
+          configData = JSON.parse(remoteConfig.toString());
+        } catch {
+          throw new Error(format("%s is not a valid config file", config));
+        }
       }
-    }
-  } else if (config.startsWith("env:")||config.slice(0, 8).trim().toLowerCase().startsWith("base64:")) {
-    if (config.startsWith("env:")) config = process.env[config.slice(4)];
-    if (!config) throw new TypeError(format("env:%s is not defined", config));
-    if (config.slice(0, 8).trim().toLowerCase().startsWith("base64:")) config = Buffer.from(config.slice(8), "base64").toString();
-    try {
-      configData = yaml.parse(config);
-    } catch {
+    } else if (config.startsWith("env:")||config.slice(0, 8).trim().toLowerCase().startsWith("base64:")) {
+      if (config.startsWith("env:")) config = process.env[config.slice(4)];
+      if (!config) throw new TypeError(format("env:%s is not defined", config));
+      if (config.slice(0, 8).trim().toLowerCase().startsWith("base64:")) config = Buffer.from(config.slice(8), "base64").toString();
       try {
-        configData = JSON.parse(config);
+        configData = yaml.parse(config);
       } catch {
-        throw new Error(format("Invalid config file, received: %s", config));
+        try {
+          configData = JSON.parse(config);
+        } catch {
+          throw new Error(format("Invalid config file, received: %s", config));
+        }
       }
-    }
-  } else if (await coreUtils.extendFs.exists(config)) {
-    const fixedInternal: string = config;
-    const localFile = await fs.readFile(fixedInternal, "utf8");
-    try {
-      configData = yaml.parse(localFile);
-    } catch {
+    } else if (await coreUtils.extendFs.exists(config)) {
+      const fixedInternal: string = config;
+      const localFile = await fs.readFile(fixedInternal, "utf8");
       try {
-        configData = JSON.parse(localFile);
+        configData = yaml.parse(localFile);
       } catch {
-        throw new Error(format("%s is not a valid config file", config));
+        try {
+          configData = JSON.parse(localFile);
+        } catch {
+          throw new Error(format("%s is not a valid config file", config));
+        }
       }
-    }
-  } else throw new Error(format("%s not supported load", config));
+    } else throw new Error(format("%s not supported load", config));
+  } else configData = config;
   if (!configData) throw new Error("configData is not defined");
   if (!configData.repositorys) configData.repositorys = {};
   const partialConfig: Partial<aptSConfig> = {};
@@ -171,15 +174,13 @@ export async function configManeger(config?: string) {
   if (configData.server?.cluster) partialConfig.server.cluster = Number(configData.server.cluster);
   if (configData.server?.pgp) {
     const pgp = configData.server.pgp;
-    let saveInPrivate: string;
-    let saveInPublic: string;
     if (pgp.publicKey?.trim() && pgp.privateKey?.trim()) {
       if (await coreUtils.extendFs.exists(pgp.publicKey)) {
-        saveInPublic = pgp.publicKey;
+        pgp.publicKeySave = path.resolve(pgp.publicKey);
         pgp.publicKey = await fs.readFile(pgp.publicKey, "utf8");
       }
       if (await coreUtils.extendFs.exists(pgp.privateKey)) {
-        saveInPrivate = pgp.privateKey;
+        pgp.privateKeySave = path.resolve(pgp.privateKey);
         pgp.privateKey = await fs.readFile(pgp.privateKey, "utf8");
       }
       partialConfig.server.pgp = {
@@ -187,8 +188,8 @@ export async function configManeger(config?: string) {
         privateKey: pgp.privateKey,
         passphrase: pgp.passphrase,
       };
-      if (saveInPrivate) partialConfig.server.pgp["privateKeySave"] = saveInPrivate;
-      if (saveInPublic) partialConfig.server.pgp["publicKeySave"] = saveInPublic;
+      if (pgp.privateKeySave) partialConfig.server.pgp.privateKeySave = pgp.privateKeySave;
+      if (pgp.publicKeySave) partialConfig.server.pgp.publicKeySave = pgp.publicKeySave;
     }
   }
 

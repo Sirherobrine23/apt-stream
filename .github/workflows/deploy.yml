@@ -13,7 +13,7 @@ jobs:
       name: Code checkout
 
     - run: docker build . -t localapt
-    - run: docker rm apt_stream || echo "Apt stoped"
+    - run: docker stop apt_stream && docker rm --force apt_stream || echo "Apt stoped"
     - run: docker run -d --name apt_stream -p 80:80/tcp -p 443:443/tcp -e APTCONFIG -e PORT=80 --restart always localapt --cofig-path="env:APTCONFIG" --cpus=12
       env:
         APTCONFIG: "${{ secrets.APTCONFIG }}"

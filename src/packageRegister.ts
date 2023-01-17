@@ -126,7 +126,7 @@ export async function packageManeger(serverConfig: aptSConfig) {
         "packageControl.Version": config.packageControl.Version,
         "packageControl.Architecture": config.packageControl.Architecture
       });
-      if (exists) throw new Error(format("Package (%s/%s %s/%s) already exists!", config.dist, config.component, config.packageControl.package, config.packageControl.version));
+      if (exists) throw new Error(format("Package (%s/%s-%s in %s/%s) already exists!", exists.packageControl.Package, exists.packageControl.Version, exists.packageControl.Architecture, exists.dist, exists.component));
       await collection.insertOne(config);
     }
     partialConfig.deletePackage = async (config) => {
@@ -136,7 +136,7 @@ export async function packageManeger(serverConfig: aptSConfig) {
         "packageControl.Package": config.packageControl.Package,
         "packageControl.Version": config.packageControl.Version,
         "packageControl.Architecture": config.packageControl.Architecture
-      }).then((data) => data.value);
+      }).then((data) => !data?.value ? Promise.reject(new Error("Package not found!")) : data.value);
     }
 
     partialConfig.getFileStream = async (dist, component, packageName, version, arch) => {
