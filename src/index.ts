@@ -1,11 +1,13 @@
 #!/usr/bin/env node
+import coreUtils, { googleDriver } from "@sirherobrine23/coreutils";
 import { aptSConfig, repositoryFrom, configManeger, saveConfig } from "./configManeger.js";
+import { packageManeger, loadRepository } from "./packageRegister.js";
 import { promises as fs } from "node:fs";
 import { format } from "node:util";
-import coreUtils, { googleDriver } from "@sirherobrine23/coreutils";
 import inquirer from "inquirer";
 import openpgp from "openpgp";
 import express from "express";
+import mongoDB from "mongodb";
 import Route from "./Route.js";
 import yargs from "yargs";
 import path from "node:path";
@@ -179,47 +181,60 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
         ],
       });
       if (dbType === "mongodb") {
-        const { mongoURL, databaseName, collectionName } = await inquirer.prompt<{mongoURL: string, databaseName: string, collectionName: string}>([
-          {
-            type: "input",
-            name: "mongoURL",
-            message: "MongoDB URL",
-            default: "mongodb://localhost:27017",
-            validate(input) {
-              if (!input) return "Set URL, dont leave blank";
-              if (!(input.startsWith("mongodb://") || input.startsWith("mongodb+srv://"))) return "Invalid URL";
-              return true;
+        const attemp = async () => {
+          const { mongoURL, databaseName, collectionName } = await inquirer.prompt<{mongoURL: string, databaseName: string, collectionName: string}>([
+            {
+              type: "input",
+              name: "mongoURL",
+              message: "MongoDB URL",
+              default: "mongodb://localhost:27017",
+              validate(input) {
+                if (!input) return "Set URL, dont leave blank";
+                if (!(input.startsWith("mongodb://") || input.startsWith("mongodb+srv://"))) return "Invalid URL";
+                return true;
+              },
             },
-          },
-          {
-            type: "input",
-            name: "databaseName",
-            message: "Database name",
-            default: "apt-stream",
-            validate(input) {
-              if (!input) return "Set database name, dont leave blank";
-              if (input.length > 24) return "Database name must be less than 24 characters";
-              return true;
+            {
+              type: "input",
+              name: "databaseName",
+              message: "Database name",
+              default: "apt-stream",
+              validate(input) {
+                if (!input) return "Set database name, dont leave blank";
+                if (input.length > 24) return "Database name must be less than 24 characters";
+                return true;
+              }
+            },
+            {
+              type: "input",
+              name: "collectionName",
+              message: "Collection name",
+              default: "packagesData",
+              validate(input) {
+                if (!input) return "Set collection name, dont leave blank";
+                if (input.length > 64) return "Collection name must be less than 64 characters";
+                return true;
+              }
             }
-          },
-          {
-            type: "input",
-            name: "collectionName",
-            message: "Collection name",
-            default: "packagesData",
-            validate(input) {
-              if (!input) return "Set collection name, dont leave blank";
-              if (input.length > 64) return "Collection name must be less than 64 characters";
-              return true;
-            }
+          ]);
+          base.db = {
+            type: "mongodb",
+            url: mongoURL,
+            db: databaseName,
+            collection: collectionName
+          };
+
+          try {
+            const db = await (new mongoDB.MongoClient(mongoURL, { serverApi: mongoDB.ServerApiVersion.v1 })).connect();
+            await db.close();
+            console.log("Database connection success");
+          } catch {
+            console.error("Invalid database connection, retrying...");
+            base.db = undefined;
+            return attemp();
           }
-        ]);
-        base.db = {
-          type: "mongodb",
-          url: mongoURL,
-          db: databaseName,
-          collection: collectionName
-        };
+        }
+        await attemp();
       } else if (dbType === "custom") {} else console.warn("Invalid database type");
     }
   } else base = await configManeger(options.config);
@@ -423,10 +438,13 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
     } else throw new Error("Unknown repo type");
   }
 
+  let lockSave = false;
   async function loopLoad() {
-    const savingSpinner = ora("Saving config").start();
-    await saveConfig(base, options.config);
-    savingSpinner.succeed("Saved config");
+    if (lockSave) {
+      const savingSpinner = ora("Saving config").start();
+      await saveConfig(base, options.config);
+      savingSpinner.succeed("Saved config");
+    } else lockSave = true;
     const distName = Object.keys(base.repositorys);
     if (distName.length === 0) {
       console.log("Init fist repository");
@@ -438,16 +456,75 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
       message: "Select opteration",
       default: "add",
       choices: [
-        "add",
-        "remove",
-        "change",
-        "cancel",
+        {
+          name: "Add repository",
+          value: "add"
+        },
+        {
+          name: "Remove repository",
+          value: "remove"
+        },
+        {
+          name: "Change repository",
+          value: "change"
+        },
+        {
+          name: "Load repository packages",
+          value: "load"
+        },
+        {
+          name: "Cancel",
+          value: "cancel"
+        }
       ]
     });
     if (opte.opte === "add") return addRepository().then(() => loopLoad()).catch(() => process.exit(0));
+    if (opte.opte === "load") {
+      if (!base.db?.type) return console.log("No database configured");
+      const package_maneger = await packageManeger(base as aptSConfig);
+      const { repoName } = await inquirer.prompt<{repoName: 1|string}>({
+        type: "list",
+        name: "repoName",
+        message: "Select repository",
+        choices: [
+          {
+            name: "All",
+            value: 1
+          },
+          ...(Object.keys(base.repositorys).map(a => ({
+            name: `Repo: ${a}`,
+            value: a
+          })))
+        ]
+      });
+
+      async function load(repoName: string): Promise<any> {
+        const oraLoad = ora(format("Loading packages from '%s'", repoName)).start();
+        if (!base.repositorys[repoName]?.from) return oraLoad.fail(format("Failed load packages from '%s', target '%s'", repoName, "no from"));
+        for (const from of base.repositorys[repoName].from) {
+          oraLoad.text = format("Loading packages from '%s', target '%s'", repoName, from.type);
+          try {
+            await loadRepository(package_maneger.addPackage, repoName, from, {
+              addFn(data) {
+                oraLoad.text = format("Loading packages from '%s', target '%s', add '%s/%s/%s'", repoName, from.type, data.Package, data.Architecture, data.Version);
+              },
+            });
+            oraLoad.text = format("Loaded packages from '%s', target '%s'", repoName, from.type);
+          } catch {
+            oraLoad.fail(format("Failed load packages from '%s', target '%s'", repoName, from.type));
+            continue;
+          }
+          oraLoad.succeed(format("Loaded packages from '%s', target '%s'", repoName, from.type));
+        }
+      }
+
+      if (repoName === 1) for (const repoName of Object.keys(base.repositorys)) await load(repoName);
+      else await load(repoName as string);
+      return;
+    };
     if (opte.opte === "remove") return loopLoad();
     if (opte.opte === "change") return loopLoad();
     if (opte.opte === "cancel") return;
   }
   return loopLoad();
-}).command("package", "Maneger packages", yargs => yargs.strict().strictCommands().command("load", "Load packages", async yargs => {})).parseAsync();
+}).parseAsync();

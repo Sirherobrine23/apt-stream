@@ -52,6 +52,7 @@ export type repositoryFrom = ({
   region: string,
   bucket: string,
   namespace: string,
+  auth: any,
   path?: string[],
 }) & {
   componentName?: string,
@@ -91,6 +92,7 @@ export type aptSConfig = {
         Version?: string,
         Description?: string,
         enableHashes?: boolean,
+        Codename?: string
       }
     }
   }
@@ -242,14 +244,13 @@ export async function configManeger(config?: string) {
       } else if (from.type === "github") {
         if (!(from.owner && from.repository)) throw new TypeError(format("repositorys.%s.from.owner and repositorys.%s.from.repo is not defined", distName, distName));
         if (from.subType === "release") {
-          if (!from.tag) throw new TypeError(format("repositorys.%s.from.tag is not defined", distName));
           fixedDist.from.push({
             type: "github",
             subType: "release",
             componentName: from.componentName,
             owner: from.owner,
             repository: from.repository,
-            tag: from.tag,
+            tag: from.tag ?? [],
           });
         } else if (from.subType === "branch") {
           fixedDist.from.push({
@@ -282,6 +283,7 @@ export async function configManeger(config?: string) {
           bucket: from.bucket,
           namespace: from.namespace,
           region: from.region,
+          auth: from.auth,
           path: (from.path ?? []).filter((path) => typeof path === "string").map((path) => path.trim()),
         });
       } else if (from.type === "docker") {
