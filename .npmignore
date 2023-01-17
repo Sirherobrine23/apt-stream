@@ -9,3 +9,13 @@ node_modules/
 # Github and Git
 .github/
 .git*
+
+/apt*.y[a]ml
+.repoTest/
+thunder-tests
+*.deb
+*.key
+*.pem
+
+# Typescript
+src/*.ts

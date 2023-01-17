@@ -500,18 +500,27 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
 
       async function load(repoName: string): Promise<any> {
         const oraLoad = ora(format("Loading packages from '%s'", repoName)).start();
-        if (!base.repositorys[repoName]?.from) return oraLoad.fail(format("Failed load packages from '%s', target '%s'", repoName, "no from"));
+        if (!base.repositorys[repoName]?.from) return oraLoad.fail(format("Failed load packages to '%s'm no from set'", repoName));
         for (const from of base.repositorys[repoName].from) {
-          oraLoad.text = format("Loading packages from '%s', target '%s'", repoName, from.type);
+          const etx = format("Loading packages from '%s', target '%s'", repoName, from.type);
+          if (!oraLoad.isSpinning) oraLoad.start(etx)
+          else oraLoad.text = etx;
           try {
-            await loadRepository(package_maneger.addPackage, repoName, from, {
-              addFn(data) {
-                oraLoad.text = format("Loading packages from '%s', target '%s', add '%s/%s/%s'", repoName, from.type, data.Package, data.Architecture, data.Version);
+            await loadRepository({
+              distName: repoName,
+              packageManeger: package_maneger,
+              repositoryFrom: from,
+              callback(err, data) {
+                if (err) return oraLoad.fail(format("Failed load packages to '%s' from target '%s'", repoName, from.type));
+                const etx = format("Loading packages from '%s', target '%s', add '%s/%s/%s'", repoName, from.type, data.Package, data.Architecture, data.Version);
+                if (!oraLoad.isSpinning) oraLoad.start(etx)
+                else oraLoad.text = etx;
+                return oraLoad;
               },
             });
-            oraLoad.text = format("Loaded packages from '%s', target '%s'", repoName, from.type);
+            oraLoad.start().text = format("Loaded packages from '%s', target '%s'", repoName, from.type);
           } catch {
-            oraLoad.fail(format("Failed load packages from '%s', target '%s'", repoName, from.type));
+            oraLoad.fail(format("Failed load packages to '%s' from target '%s'", repoName, from.type));
             continue;
           }
           oraLoad.succeed(format("Loaded packages from '%s', target '%s'", repoName, from.type));
@@ -520,7 +529,7 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
 
       if (repoName === 1) for (const repoName of Object.keys(base.repositorys)) await load(repoName);
       else await load(repoName as string);
-      return;
+      return package_maneger.close();
     };
     if (opte.opte === "remove") return loopLoad();
     if (opte.opte === "change") return loopLoad();
