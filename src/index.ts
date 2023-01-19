@@ -4,16 +4,41 @@ import { aptSConfig, repositoryFrom, configManeger, saveConfig } from "./configM
 import { packageManeger, loadRepository } from "./packageRegister.js";
 import { promises as fs } from "node:fs";
 import { format } from "node:util";
+import express, { Express, Router } from "express";
 import inquirer from "inquirer";
 import openpgp from "openpgp";
-import express from "express";
 import mongoDB from "mongodb";
-import Route from "./Route.js";
+import cluster from "node:cluster";
+import aptRoute from "./aptRoute.js";
 import yargs from "yargs";
 import path from "node:path";
 import yaml from "yaml";
 import ora from "ora";
 import os from "node:os";
+import "./log.js";
+
+function getExpressRoutes(app: Express|Router) {
+  const routes = [];
+  function print(path: any, layer: any) {
+    function split(thing: any) {
+      if (typeof thing === "string") return thing.split("/");
+      else if (thing.fast_slash) return "";
+      else {
+        var match = thing.toString().replace("\\/?", "").replace("(?=\\/|$)", "$").match(/^\/\^((?:\\[.*+?^${}()|[\]\\\/]|[^.*+?^${}()|[\]\\\/])*)\$\//)
+        return match ? match[1].replace(/\\(.)/g, "$1").split("/") : "<complex:" + thing.toString() + ">"
+      }
+    }
+
+    if (layer.route) layer.route.stack.forEach(print.bind(null, path.concat(split(layer.route.path))));
+    else if (layer.name === "router" && layer.handle.stack) layer.handle.stack.forEach(print.bind(null, path.concat(split(layer.regexp))));
+    else if (layer.method) routes.push({
+      method: layer.method.toUpperCase(),
+      path: path.concat(split(layer.regexp)).filter(Boolean).join("/")
+    });
+  }
+  app?.["_router"]?.stack?.forEach(print.bind(null, []));
+  return routes.filter(route => route.path !== "*") as { method: string, path: string }[];
+}
 
 yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option("config", {
   alias: "C",
@@ -31,11 +56,107 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
     type: "number",
     alias: "c",
     default: os.cpus().length,
+  }).option("disable_tracer", {
+    description: "Disable tracer for requests errors",
+    type: "boolean",
+    default: (process.env.DISABLE_TRACER === "true")
   }).parseSync();
-  const aptRoute = await Route(options.config);
+  const config = await configManeger(options.config);
+  const clusterSpawn = Number(config?.server?.cluster ?? options.cluster);
+  if (clusterSpawn > 1) {
+    if (cluster.isPrimary) {
+      console.log("Main cluster maneger, PID %d started", process.pid);
+      cluster.on("error", err => {
+        console.log(err?.stack ?? String(err));
+        // process.exit(1);
+      }).on("exit", (worker, code, signal: NodeJS.Signals) => {
+        // if (process[Symbol.for("ts-node.register.instance")]) cluster.setupPrimary({/* Fix for ts-node */ execArgv: ["--loader", "ts-node/esm"]});
+        if (signal === "SIGKILL") return console.log("Worker %d was killed", worker?.id ?? "No ID");
+        else if (signal === "SIGABRT") return console.log("Worker %d was aborted", worker?.id ?? "No ID");
+        else if (signal === "SIGTERM") return console.log("Worker %d was terminated", worker?.id ?? "No ID");
+        console.log("Worker %d died with code: %s, Signal: %s", worker?.id ?? "No ID", code, signal ?? "No Signal");
+        cluster.fork();
+      });
+      for (let i = 0; i < clusterSpawn; i++) {
+        console.log("Forking worker %d", i);
+        cluster.fork().on("message", (msg) => console.log("Worker %d sent message: %o", i, msg));
+      }
+      return;
+    }
+    const id = cluster.worker?.id ?? "No ID", { pid } = process;
+    console.log("Worker %d started, Node PID %f", id, pid);
+  }
+
+  // Process catch rejects
+  process.on("unhandledRejection", err => console.error("Rejections Err: %s", err));
+  process.on("uncaughtException", err => console.error("Uncaught Err: %s", err));
+
+  // Main app
   const app = express();
-  app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({ extended: true })).use(aptRoute.app);
-  app.listen(options.port, () => console.log("Server started on port %s", options.port));
+  app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({ extended: true })).use((req, res, next) => {
+    let ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+    if (Array.isArray(ip)) ip = ip[0];
+    if (ip.slice(0, 7) === "::ffff:") ip = ip.slice(7);
+    res.setHeader("Access-Control-Allow-Origin", "*").setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE").setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.json = (body) => {
+      res.setHeader("Content-Type", "application/json");
+      Promise.resolve(body).then((data) => res.send(JSON.stringify(data, (_, value) => {
+        if (typeof value === "bigint") return value.toString();
+        return value;
+      }, 2)));
+      return res;
+    }
+
+    const baseMessage = "Method: %s, IP: %s, Path: %s";
+    const reqDate = new Date();
+    const { method, path: pathLocal } = req;
+    console.info(baseMessage, method, ip, pathLocal);
+    res.once("close", () => {
+      const endReqDate = new Date();
+      return console.info(`${baseMessage}, Code: %f, Response seconds: %f, `, method, ip, pathLocal, res.statusCode ?? null, endReqDate.getTime() - reqDate.getTime());
+    });
+    next();
+  });
+
+
+  // APT Route
+  const aptRoutes = await aptRoute(config);
+  app.use("apt", aptRoutes.app).use(aptRoutes.app);
+
+  // 404 and err handler
+  app.all("*", (req, res) => res.status(404).json({
+    error: "Not Found",
+    path: path.posix.resolve(req.path),
+    method: req.method,
+    headers: req.headers,
+  }));
+  app.use((err, req, res, _next) => {
+    const tracerObj = {};
+    Error.captureStackTrace(tracerObj);
+    const tracer = (String(err?.stack ?? tracerObj["stack"])).split("\n");
+    const errorObject = {
+      error: "Internal Server Error",
+      message: err?.message ?? String(err),
+      toDevelop: {
+        req: {
+          path: req.path,
+          method: req.method,
+          headers: req.headers,
+        },
+        tracer: !options.disable_tracer ? tracer : "Disabled",
+        routes: getExpressRoutes(app),
+      }
+    };
+
+    console.error("Server catch error:\n", errorObject);
+    return res.status(500).json(errorObject);
+  });
+
+  // Listen
+  const serverPort = Number(process.env.PORT ?? config?.server?.portListen ?? options.port);
+  app.listen(serverPort, function() {
+    console.log("Server listen port %s", (this.address() as any).port);
+  });
 }).command("base64", "Convert config in base64 string", async yargs => {
   const options = yargs.strict().option("json", {
     type: "boolean",

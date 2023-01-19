@@ -45,7 +45,7 @@ export type packagesManeger = {
   getDists: () => Promise<string[]>,
   getDistInfo: (dist: string) => Promise<{components: string[], arch: string[], packages: string[]}>,
   getPackages: (dist?: string, component?: string) => Promise<packageStorage[]>,
-  getFileStream: (dist: string, component: string, packageName: string, version: string, arch: string) => Promise<stream.Readable>,
+  getFileStream: (info: {dist?: string, component: string, packageName: string, version: string, arch: string}) => Promise<stream.Readable>,
   addPackage: (config: packageStorage) => Promise<void>,
   deletePackage: (config: packageStorage) => Promise<packageStorage>,
   close: () => Promise<void>
@@ -139,8 +139,18 @@ export async function packageManeger(serverConfig: aptSConfig) {
       }).then((data) => !data?.value ? Promise.reject(new Error("Package not found!")) : data.value);
     }
 
-    partialConfig.getFileStream = async (dist, component, packageName, version, arch) => {
-      const packageData = await collection.findOne({dist, component, "package.package": packageName, "package.version": version, "package.architecture": arch});
+    partialConfig.getFileStream = async (info) => {
+      const objFind = {
+        dist: info.dist,
+        component: info.component,
+        "package.Package": info.packageName,
+        "package.Version": info.version,
+        "package.Architecture": info.arch,
+      };
+      for (const key in objFind) if (!objFind[key]) delete objFind[key];
+      if (!(objFind.component && objFind["package.Architecture"] && objFind["package.Package"] && objFind["package.Version"])) throw new Error("Invalid package info!");
+
+      const packageData = await collection.findOne(objFind);
       if (!packageData) throw new Error("Package not found!");
       return genericStream(packageData);
     }
@@ -164,8 +174,8 @@ export async function packageManeger(serverConfig: aptSConfig) {
         return dist;
       }, {} as Partial<Awaited<ReturnType<packagesManeger["getDistInfo"]>>>) as Awaited<ReturnType<packagesManeger["getDistInfo"]>>;
     };
-    partialConfig.getFileStream = async (dist, component, packageName, version, arch) => {
-      const packageData = interalPackages.find((curr) => curr.dist === dist && curr.component === component && curr.packageControl.Package === packageName && curr.packageControl.Version === version && curr.packageControl.Architecture === arch);
+    partialConfig.getFileStream = async (info) => {
+      const packageData = interalPackages.find((curr) => curr.dist === info.dist && curr.component === info.component && curr.packageControl.Package === info.packageName && curr.packageControl.Version === info.version && curr.packageControl.Architecture === info.arch);
       if (!packageData) throw new Error("Package not found!");
       return genericStream(packageData);
     }
