@@ -55,12 +55,12 @@ export async function genericStream(packageData: packageStorage): Promise<stream
   if (!packageData) throw new Error("Package not found!");
   if (typeof packageData.restoreStream === "string") packageData.restoreStream = JSON.parse(packageData.restoreStream);
   if (packageData.restoreStream.from === "url") {
-    if (packageData.repositoryFrom?.type === "http") return coreUtils.httpRequest.pipeFetch({
+    if (packageData.repositoryFrom?.type === "http") return coreUtils.httpRequest.streamRequest({
       url: packageData.restoreStream.url,
       headers: packageData.repositoryFrom.auth?.header,
       query: packageData.repositoryFrom.auth?.query
     });
-    return coreUtils.httpRequest.pipeFetch(packageData.restoreStream.url);
+    return coreUtils.httpRequest.streamRequest(packageData.restoreStream.url);
   } else if (packageData.restoreStream.from === "tar") {
     const inf = packageData.restoreStream;
     const tarStream = coreUtils.httpRequestLarge.Tar(packageData.restoreStream.url);
@@ -221,7 +221,7 @@ export async function loadRepository(options: loadRepositoryOptions) {
   } else if (repositoryFrom.type === "http") {
     const { url, auth: {header, query} } = repositoryFrom;
     try {
-      const packageControl = await DebianPackage.getControl(await httpRequest.pipeFetch({
+      const packageControl = await DebianPackage.getControl(await httpRequest.streamRequest({
         url,
         headers: header,
         query
@@ -247,16 +247,17 @@ export async function loadRepository(options: loadRepositoryOptions) {
     }
   } else if (repositoryFrom.type === "github") {
     const { owner, repository, token, subType } = repositoryFrom;
+    const gh = await httpRequestGithub.GithubManeger(owner, repository, token);
     if (subType === "branch") {
       const { branch } = repositoryFrom;
-      const rawRquests = (await httpRequestGithub.githubTree(owner, repository, branch)).tree.filter(x => x.path.endsWith(".deb")).map(x => {
+      const rawRquests = (await gh.trees(branch)).tree.filter(x => x.path.endsWith(".deb")).map(x => {
         const rawURL = new URL(`https://raw.githubusercontent.com/${owner}/${repository}/${branch}`);
         rawURL.pathname = path.posix.join(rawURL.pathname, x.path);
         return rawURL.toString();
       });
       for (const rawURL of rawRquests) {
         try {
-          const packageControl = await DebianPackage.getControl(await httpRequest.pipeFetch({
+          const packageControl = await DebianPackage.getControl(await httpRequest.streamRequest({
             url: rawURL,
             headers: token ? { Authorization: `token ${token}` } : undefined
           }));
@@ -283,11 +284,11 @@ export async function loadRepository(options: loadRepositoryOptions) {
     } else if (subType === "release") {
       const { tag } = repositoryFrom;
       try {
-        let ghReleases = await (tag?.length > 0 ? Promise.all(tag.map(async releaseTag => httpRequestGithub.getRelease({ owner, repository, token, releaseTag }))).then(x => x.flat(3)) : httpRequestGithub.getRelease({ owner, repository, token, all: true }));
+        let ghReleases = await (tag?.length > 0 ? Promise.all(tag.map(async releaseTag => gh.getRelease(releaseTag))).then(x => x.flat(3)) : gh.getRelease());
         ghReleases = ghReleases.filter(x => (x.assets = x.assets.filter(x => x.name.endsWith(".deb"))).length > 0);
         for (const { assets, tag_name } of ghReleases) {
           for (const { browser_download_url } of assets) {
-            const packageControl = await DebianPackage.getControl(await httpRequest.pipeFetch({
+            const packageControl = await DebianPackage.getControl(await httpRequest.streamRequest({
               url: browser_download_url,
               headers: token ? { Authorization: `token ${token}` } : undefined
             }));
@@ -343,7 +344,12 @@ export async function loadRepository(options: loadRepositoryOptions) {
   } else if (repositoryFrom.type === "google_driver") {
     try {
       const { app, id } = repositoryFrom;
-      const googleDriver = await coreUtils.googleDriver.GoogleDriver(app.id, app.secret, {token: app.token});
+      if (!app.token) throw new Error("Google driver token is required");
+      const googleDriver = await coreUtils.googleDriver({
+        clientID: app.id,
+        clientSecret: app.secret,
+        token: app.token
+      });
       let filesList = await (!id ? googleDriver.listFiles() : Promise.all(id.map(async id => googleDriver.listFiles(id))).then(x => x.flat(3)));
       filesList = filesList.filter(x => x.name.endsWith(".deb"));
       for (const file of filesList) {
@@ -403,7 +409,7 @@ export async function loadRepository(options: loadRepositoryOptions) {
         for (const component of mirrorDists.components) {
           for (const arch of mirrorDists.archs) {
             const packagesURL = joinPath("dists", mirrorName, component, "binary-" + arch, "Packages");
-            const stream = await httpRequest.pipeFetch(packagesURL).catch(() => httpRequest.pipeFetch(packagesURL+".gz").then(stream => stream.pipe(zlib.createGunzip()))).catch(() => httpRequest.pipeFetch(packagesURL+".xz").then(stream => stream.pipe(lzma.Decompressor()))).catch(err => console.log(err));
+            const stream = await httpRequest.streamRequest(packagesURL).catch(() => httpRequest.streamRequest(packagesURL+".gz").then(stream => stream.pipe(zlib.createGunzip()))).catch(() => httpRequest.streamRequest(packagesURL+".xz").then(stream => stream.pipe(lzma.Decompressor()))).catch(err => console.log(err));
             if (!stream) continue;
             const comArchPackages = await DebianPackage.parsePackages(stream);
             for (const packageControl of comArchPackages) {

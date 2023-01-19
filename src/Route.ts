@@ -20,6 +20,7 @@ export class createAPTPackage extends stream.Readable {
       packageControl.Filename = Filename;
       if (breakLine) this.push("\n\n");
       this.push(Object.keys(packageControl).map((key) => `${key}: ${packageControl[key]}`).join("\n"));
+      breakLine = true;
     }
     this.push(null);
   }
@@ -33,7 +34,7 @@ async function createPackageHASH(...args: ConstructorParameters<typeof createAPT
   const xz = packageStream.pipe(lzma.Compressor());
   let xzSize = 0; xz.on("data", (chunk) => xzSize += chunk.length);
 
-  const [rawHash, gzipHash, xzHash] = await Promise.all([coreUtils.extendsCrypto.createHashAsync("all", packageStream), coreUtils.extendsCrypto.createHashAsync("all", gzip), coreUtils.extendsCrypto.createHashAsync("all", xz)]);
+  const [rawHash, gzipHash, xzHash] = await Promise.all([coreUtils.extendsCrypto.createHashAsync(packageStream), coreUtils.extendsCrypto.createHashAsync(gzip), coreUtils.extendsCrypto.createHashAsync(xz)]);
   return {
     raw: {
       size: rawSize,
@@ -76,7 +77,7 @@ export async function createRouters(config: string|aptSConfig) {
     console.log(baseMessage, reqDate.toUTCString(), clusterID, method, ip, pathLocal);
     res.once("close", () => {
       const endReqDate = new Date();
-      return console.log(`${baseMessage}, Code: %f, res seconds: %f, `, endReqDate.toUTCString(), clusterID, method, ip, path, res.statusCode ?? null, endReqDate.getTime() - reqDate.getTime());
+      return console.log(`${baseMessage}, Code: %f, res seconds: %f, `, endReqDate.toUTCString(), clusterID, method, ip, pathLocal, res.statusCode ?? null, endReqDate.getTime() - reqDate.getTime());
     });
     next();
   });
@@ -152,10 +153,10 @@ export async function createRouters(config: string|aptSConfig) {
 
   const pgpKey = serverConfig.server?.pgp;
   app.get("/dists", ({}, res, next) => packagesManeger.getDists().then(data => res.json(data)).catch(next));
-  app.get("/dists/:distName(/(In)?Release)?", ({params: {distName}, path}, res, next) => {
+  app.get("/dists/:distName", ({params: {distName}}, res, next) => createRelease(distName).then(Release => res.json(Release)).catch(next));
+  app.get("/dists/:distName/((In)?Release)", ({params: {distName}, path}, res, next) => {
     return createRelease(distName).then(async Release => {
-      if (path.endsWith("Release")) return res.setHeader("Content-Type", "text/plain").send(convertRelease(Release));
-      else if (path.endsWith("InRelease")) {
+      if (path.endsWith("InRelease")) {
         if (!pgpKey) return res.status(404).json({error: "PGP not found"});
         const privateKey = pgpKey.passphrase ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: pgpKey.privateKey }), passphrase: pgpKey.passphrase}) : await openpgp.readPrivateKey({ armoredKey: pgpKey.privateKey });
         const ReleaseData = convertRelease(Release);
@@ -165,7 +166,7 @@ export async function createRouters(config: string|aptSConfig) {
           message: await openpgp.createCleartextMessage({text: ReleaseData}),
         }));
       }
-      return res.json(Release);
+      return res.setHeader("Content-Type", "text/plain").send(convertRelease(Release));
     }).catch(next);
   });
 
@@ -179,6 +180,16 @@ export async function createRouters(config: string|aptSConfig) {
         format: "armored",
         message: await openpgp.createCleartextMessage({text: ReleaseData}),
       }));
+    }).catch(next);
+  });
+
+  app.get("/dists/:distName/:component/binary-:arch/Packages(.(xz|gz))?", ({params: {distName, component, arch}, path}, res, next) => {
+    return Promise  .resolve().then(async () => {
+      const packagesArray = await (await packagesManeger.getPackages(distName, component)).filter(x => ((["all", arch]).includes(x.packageControl.Architecture)));
+      const stream = new createAPTPackage("/", packagesArray);
+      if (path.endsWith(".gz")) return stream.pipe(zlib.createGzip()).pipe(res.writeHead(200, {"Content-Type": "application/x-gzip"}));
+      else if (path.endsWith(".xz")) return stream.pipe(lzma.Compressor()).pipe(res.writeHead(200, {"Content-Type": "application/x-xz"}));
+      else return stream.pipe(res.writeHead(200, {"Content-Type": "text/plain"}));
     }).catch(next);
   });
 

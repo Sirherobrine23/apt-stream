@@ -370,11 +370,9 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
         },
       ]);
       if (!token?.trim()) token = undefined;
+      const gh = await coreUtils.httpRequestGithub(owner, repository, token);
       if (variant === "repo") {
-        const remoteBranches = await coreUtils.httpRequest.getJSON<{name: string}[]>({
-          url: `https://api.github.com/repos/${owner}/${repository}/branches`,
-          headers: token ? {Authorization: `Bearer ${token}`} : {}
-        }).then(a => a.map(b => b.name));
+        const remoteBranches = await gh.branchList().then(a => a.flat().map(b => b.name));
         const { branch } = await inquirer.prompt<{branch: string}>({
           type: "list",
           name: "branch",
@@ -394,7 +392,7 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
         const oraGetRelease = ora("Getting release tags").start();
         let releaseTags: string[] = [];
         try {
-          releaseTags = await httpRequestGithub.getRelease({owner, repository, token, all: true}).then(a => a.map(b => b.tag_name));
+          releaseTags = await gh.getRelease().then(a => a.map(b => b.tag_name));
           oraGetRelease.succeed("Got release tags");
         } catch (err) {
           oraGetRelease.fail(format("Failed to get release tags, err: %s", err));
@@ -448,16 +446,18 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
 
       let inToken: string;
       const oraURL = ora("Creating url to get token").start();
-      await googleDriver.GoogleDriver(client_secret, client_id, {async authCallback(url, token) {
-        if (token) {
-          inToken = token;
-          oraURL.succeed("Token created");
-          return;
-        } else {
-          oraURL.text = format("Open url '%s' to get token", url);
-          oraURL.stop();
-        }
-      }});
+      await googleDriver.GoogleDriver({
+        clientID: client_id,
+        clientSecret: client_secret,
+        authUrl(err, data) {
+          if (err) {
+            oraURL.fail("Failed to create url to get token");
+            throw err;
+          }
+          if (data.authUrl) oraURL.text = format("Open this url to get token: %s", data.authUrl);
+          else oraURL.succeed(format("Got token: %s", data.token));
+        },
+      });
 
       return {
         type: "google_driver",
@@ -589,8 +589,9 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
           info.owner = owner;
           info.repository = repository;
           info.token = token;
+          const gh = await httpRequestGithub.GithubManeger(owner, repository, token);
           if (info.subType === "branch") {
-            const remoteBranches = await httpRequest.getJSON<{name: string}[]>({
+            const remoteBranches = await httpRequest.fetchJSON<{name: string}[]>({
               url: `https://api.github.com/repos/${owner}/${repository}/branches`,
               headers: token ? {Authorization: `token ${token}`} : undefined
             });
@@ -602,7 +603,7 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
             });
             info.branch = branch;
           } else if (info.subType === "release") {
-            const remoteTags = (await httpRequestGithub.getRelease({owner, repository, token, all: true})).map(a => a.tag_name);
+            const remoteTags = (await gh.getRelease()).map(a => a.tag_name);
             const { tag } = await inquirer.prompt<{tag: string[]}>({
               type: "checkbox",
               name: "tag",
