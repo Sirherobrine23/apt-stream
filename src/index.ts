@@ -121,7 +121,7 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
 
   // APT Route
   const aptRoutes = await aptRoute(config);
-  app.use("apt", aptRoutes.app).use(aptRoutes.app);
+  app.use("/apt", aptRoutes.app).use(aptRoutes.app);
 
   // 404 and err handler
   app.all("*", (req, res) => res.status(404).json({
