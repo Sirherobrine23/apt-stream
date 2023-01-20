@@ -1,4 +1,4 @@
-import { MongoClient, ServerApiVersion } from "mongodb";
+import { MongoClient, ServerApiVersion, Filter } from "mongodb";
 import { promises as fs, createReadStream } from "node:fs";
 import { aptSConfig , repositoryFrom} from "./configManeger.js";
 import coreUtils, { DebianPackage, httpRequest, httpRequestGithub } from "@sirherobrine23/coreutils";
@@ -140,16 +140,14 @@ export async function packageManeger(serverConfig: aptSConfig) {
     }
 
     partialConfig.getFileStream = async (info) => {
-      const objFind = {
+      const objFind: Filter<packageStorage> = {
         dist: info.dist,
         component: info.component,
-        "package.Package": info.packageName,
-        "package.Version": info.version,
-        "package.Architecture": info.arch,
+        "packageControl.Package": info.packageName,
+        "packageControl.Version": info.version,
+        "packageControl.Architecture": info.arch
       };
       for (const key in objFind) if (!objFind[key]) delete objFind[key];
-      if (!(objFind.component && objFind["package.Architecture"] && objFind["package.Package"] && objFind["package.Version"])) throw new Error("Invalid package info!");
-
       const packageData = await collection.findOne(objFind);
       if (!packageData) throw new Error("Package not found!");
       return genericStream(packageData);

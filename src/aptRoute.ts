@@ -27,7 +27,7 @@ export class createAPTPackage extends stream.Readable {
       );
       packageControl.Filename = Filename;
       if (breakLine) this.push("\n\n");
-      this.push(Object.keys(packageControl).map((key) => `${key}: ${packageControl[key]}`).join("\n"));
+      this.push(coreUtils.DebianPackage.createControl(packageControl));
       breakLine = true;
     }
     this.push(null);
@@ -172,11 +172,7 @@ export async function createRouters(config: string|aptSConfig) {
         let packages = await packagesManeger.getPackages(undefined, packageComponent);
         packages = packages.filter(x => x.packageControl.Architecture === packageArch && x.packageControl.Version === packageVersion && x.packageControl.Package === packageName);
         if (!packages.length) throw new Error("Package not found");
-        return res.json(packages.reduce((main, b) => {
-          if (!main[b.packageControl.Package]) main[b.packageControl.Package] = [];
-          main[b.packageControl.Package].push(b.packageControl);
-          return main;
-        }, {}));
+        return res.json(packages.at(-1)?.packageControl);
       } else if (packageComponent && packageArch && packageVersion) {
         const packages = await packagesManeger.getPackages(undefined, packageComponent);
         return res.json(packages.filter(x => x.packageControl.Architecture === packageArch && x.packageControl.Version === packageVersion).reduce((main, b) => {
