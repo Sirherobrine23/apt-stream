@@ -118,19 +118,20 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
     next();
   });
 
+  // Package Maneger
+  const package_maneger = await packageManeger(config);
 
   // APT Route
-  const aptRoutes = await aptRoute(config);
-  app.use("/apt", aptRoutes.app).use(aptRoutes.app);
+  const aptRoutes = await aptRoute(package_maneger, config);
+  app.use("/apt", aptRoutes).use(aptRoutes);
 
   // 404 and err handler
-  app.all("*", (req, res) => res.status(404).json({
+  app.use((req, res) => res.status(404).json({
     error: "Not Found",
     path: path.posix.resolve(req.path),
     method: req.method,
-    headers: req.headers,
-  }));
-  app.use((err, req, res, _next) => {
+    routes: getExpressRoutes(app),
+  })).use((err, req, res, _next) => {
     const tracerObj = {};
     Error.captureStackTrace(tracerObj);
     const tracer = (String(err?.stack ?? tracerObj["stack"])).split("\n");

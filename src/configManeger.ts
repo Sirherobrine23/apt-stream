@@ -81,7 +81,6 @@ export type aptSConfig = {
   },
   globalAptConfig?: {
     Origin?: string,
-    Label?: string,
     urlHost?: string,
     oldPackagesStyles?: boolean
   },
@@ -191,6 +190,17 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
       if (pgp.privateKeySave) partialConfig.server.pgp.privateKeySave = pgp.privateKeySave;
       if (pgp.publicKeySave) partialConfig.server.pgp.publicKeySave = pgp.publicKeySave;
     }
+  }
+
+  // Global config
+  if (configData.globalAptConfig) {
+    partialConfig.globalAptConfig = {
+      oldPackagesStyles: configData.globalAptConfig.oldPackagesStyles ?? false,
+      Origin: configData.globalAptConfig.Origin,
+      urlHost: configData.globalAptConfig.urlHost,
+    };
+    if (!partialConfig.globalAptConfig.urlHost) delete partialConfig.globalAptConfig.urlHost;
+    if (configData.globalAptConfig.Origin === undefined) delete partialConfig.globalAptConfig.Origin;
   }
 
   // DB config

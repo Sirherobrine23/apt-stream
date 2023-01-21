@@ -14,7 +14,7 @@ jobs:
 
     - run: docker build . -t localapt
     - run: docker stop apt_stream && docker rm --force apt_stream || echo "Apt stoped"
-    - run: docker run -d --name apt_stream -p 80:80/tcp -p 443:443/tcp -e APTCONFIG -e PORT=80 --restart always localapt --cofig-path="env:APTCONFIG" --cpus=12
+    - run: docker run -d --name apt_stream -p 80:80/tcp -p 443:443/tcp -e APTCONFIG -e PORT=80 -e HTTPS_PORT=443 --restart always localapt --config="env:APTCONFIG"
       env:
         APTCONFIG: "${{ secrets.APTCONFIG }}"
     - run: docker system prune --force --volumes --all
