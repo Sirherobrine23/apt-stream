@@ -40,7 +40,7 @@ function getExpressRoutes(app: Express|Router) {
   return routes.filter(route => route.path !== "*") as { method: string, path: string }[];
 }
 
-yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option("config", {
+yargs(process.argv.slice(2)).alias("h", "help").strictCommands().option("config", {
   alias: "C",
   type: "string",
   default: "apts.yaml",
@@ -292,14 +292,20 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
     }
 
     if (initialData.useDatabase) {
-      const { dbType } = await inquirer.prompt({
+      const { dbType } = await inquirer.prompt<{ dbType: aptSConfig["db"]["type"] }>({
         type: "list",
         name: "dbType",
         message: "Database type",
-        default: "mongodb",
         choices: [
-          "mongodb",
-          "custom"
+          {
+            name: "MongoDB",
+            value: "mongodb",
+            checked: true
+          },
+          {
+            name: "CouchDB",
+            value: "couchdb"
+          }
         ],
       });
       if (dbType === "mongodb") {
@@ -357,7 +363,40 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
           }
         }
         await attemp();
-      } else if (dbType === "custom") {} else console.warn("Invalid database type");
+      } else if (dbType === "couchdb") {
+        const attemp = async () => {
+          const { couchURL, databaseName } = await inquirer.prompt<{couchURL: string, databaseName: string}>([
+            {
+              type: "input",
+              name: "couchURL",
+              message: "CouchDB URL",
+              default: "http://localhost:5984",
+              validate(input) {
+                if (!input) return "Set URL, dont leave blank";
+                if (!(input.startsWith("http://") || input.startsWith("https://"))) return "Invalid URL";
+                return true;
+              },
+            },
+            {
+              type: "input",
+              name: "databaseName",
+              message: "Database name",
+              default: "apt-stream",
+              validate(input) {
+                if (!input) return "Set database name, dont leave blank";
+                if (input.length > 64) return "Database name must be less than 64 characters";
+                return true;
+              }
+            }
+          ]);
+          base.db = {
+            type: "couchdb",
+            url: couchURL,
+            db: databaseName
+          };
+        }
+        await attemp();
+      } else console.warn("Invalid database type, ignoring");
     }
   } else base = await configManeger(options.config);
 
@@ -590,7 +629,58 @@ yargs(process.argv.slice(2)).strictCommands().strict().alias("h", "help").option
         }
       };
     } else if (repoType === "oracle_bucket") {
+      console.log("Dont implement yet");
+      await inquirer.prompt([
+        {
+          type: "input",
+          name: "bucket",
+          message: "Bucket name"
+        },
+        {
+          type: "input",
+          name: "namespace",
+          message: "Namespace"
+        },
+        {
+          name: "region",
+          message: "Region",
+          type: "input",
+        },
+        {
+          name: "authType",
+          message: "Auth type",
+          type: "list",
+          choices: [
+            {
+              name: "Preshared key (Recommended)",
+              value: "preshared_key",
+              checked: true
+            },
+            {
+              name: "Public and private keys",
+              value: "public_private_key"
+            }
+          ]
+        }
+      ]);;
     } else if (repoType === "mirror") {
+      await inquirer.prompt([
+        {
+          type: "input",
+          name: "url",
+          message: "Url"
+        },
+        {
+          type: "input",
+          name: "component",
+          message: "Component"
+        },
+        {
+          type: "input",
+          name: "distribution",
+          message: "Distribution"
+        }
+      ]);
     }
 
     throw new Error("Unknown repo type");

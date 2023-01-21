@@ -1,5 +1,5 @@
 import { MongoClient, ServerApiVersion, Filter } from "mongodb";
-import { promises as fs, createReadStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import { aptSConfig , repositoryFrom} from "./configManeger.js";
 import coreUtils, { DebianPackage, httpRequest, httpRequestGithub } from "@sirherobrine23/coreutils";
 import { format } from "node:util";
@@ -152,9 +152,6 @@ export async function packageManeger(serverConfig: aptSConfig) {
       if (!packageData) throw new Error("Package not found!");
       return genericStream(packageData);
     }
-  } else if (serverConfig.db?.type === "internal") {
-    const rootSave = path.resolve(serverConfig.db.rootPath);
-    if (!await coreUtils.extendFs.exists(rootSave)) await fs.mkdir(rootSave, {recursive: true});
   } else {
     const interalPackages: packageStorage[] = [];
     partialConfig.getPackages = async (dist, component) => interalPackages.filter((curr) => (!dist || curr.dist === dist) && (!component || curr.component === component));

@@ -76,8 +76,9 @@ export type aptSConfig = {
     db?: string,
     collection?: string,
   }|{
-    type: "internal",
-    rootPath: string,
+    type: "couchdb",
+    url: string,
+    db?: string,
   },
   globalAptConfig?: {
     Origin?: string,
@@ -215,6 +216,14 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
         url: db.url,
         db: database,
         collection,
+      };
+    } else if (db.type === "couchdb") {
+      if (!db.url) throw new TypeError("db.url is not defined");
+      const database = db.db?.trim() ?? "apt-stream";
+      partialConfig.db = {
+        type: "couchdb",
+        url: db.url,
+        db: database,
       };
     }
   }
