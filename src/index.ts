@@ -92,6 +92,7 @@ yargs(process.argv.slice(2)).alias("h", "help").strictCommands().option("config"
   process.on("uncaughtException", err => console.error("Uncaught Err: %s", err));
 
   // Main app
+  let connectionCount = 0;
   const app = express();
   app.disable("x-powered-by").disable("etag").use(express.json()).use(express.urlencoded({ extended: true })).use((req, res, next) => {
     let ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
@@ -112,10 +113,28 @@ yargs(process.argv.slice(2)).alias("h", "help").strictCommands().option("config"
     const { method, path: pathLocal } = req;
     console.info(baseMessage, method, ip, pathLocal);
     res.once("close", () => {
+      connectionCount--;
       const endReqDate = new Date();
       return console.info(`${baseMessage}, Code: %f, Response seconds: %f, `, method, ip, pathLocal, res.statusCode ?? null, endReqDate.getTime() - reqDate.getTime());
     });
+    connectionCount++;
     next();
+  });
+
+  // Host info
+  app.get("/", async ({res}) => {
+    const clusterID = cluster.isPrimary ? "Primary" : `Worker ${cluster.worker?.id ?? "No ID"}`;
+    res.json({
+      cpuCores: String(os.cpus().length || "Unknown"),
+      system: process.platform || "Unknown",
+      arch: String(os.arch() || "Unknown"),
+      nodeVersion: process.version || "Unknown",
+      connectionCount,
+      clusterInfo: {
+        isCluster: cluster.isWorker,
+        clusterID,
+      }
+    });
   });
 
   // Package Maneger

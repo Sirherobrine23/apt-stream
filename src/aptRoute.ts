@@ -29,30 +29,85 @@ export async function createRouters(package_maneger: packagesManeger, server_con
   });
 
   // Download package
-  app.get("/pool(/:componentName)?(/:packageName)?(/:packageArch)?(/:packageVersion)?(/download.deb)?", (req, res, next) => {
-    return res.json({
-      componentName: req.params.componentName,
-      packageName: req.params.packageName,
-      packageArch: req.params.packageArch,
-      packageVersion: req.params.packageVersion,
-    });
+  app.get("/pool(/:componentName)?(/:packageLetter)?(/:packageName)?(/(:packageNameNull)_(:packageVersion)_(:packageArch)(.deb)?)?", (req, res, next) => {
+    const { componentName, packageName, packageVersion, packageArch } = req.params as any;
+    let packageLetter = (req.params["packageLetter"] ?? "");
+    const isDownload = (componentName?.trim() && packageName?.trim() && packageVersion?.trim() && packageArch?.trim()) && req.path.endsWith(".deb");
+    const isPackageInfo = (componentName?.trim() && packageName?.trim() && packageVersion?.trim() && packageArch?.trim()) && !isDownload;
+    const isPackageList = componentName?.trim() && packageName?.trim() && !isPackageInfo;
+    const isPackageLetter = packageLetter?.trim() && componentName?.trim() && !isPackageList;
+    const isComponentList = componentName?.trim() && !isPackageLetter;
+
+    // Send package file
+    if (isDownload) return package_maneger.getFileStream({component: componentName, packageName, version: packageVersion, arch: packageArch}).then(stream => stream.pipe(res.writeHead(200, {"Content-Type": "application/octet-stream"}))).catch(next);
+    return Promise.resolve().then(async () => {
+      // return data error to fist letter
+      if (packageLetter.length > 1) return res.status(400).json({ error: "Package letter must be one character", to: "Package letter" });
+      packageLetter = packageLetter[0];
+
+      const packagesArray = (await package_maneger.getPackages()).map(data => {
+        delete data.packageControl.Filename;
+        return data;
+      });
+      if (isPackageInfo) {
+        const controlData = packagesArray.find(pkg => pkg.component === componentName && pkg.packageControl.Package === packageName && pkg.packageControl.Version === packageVersion && pkg.packageControl.Architecture === packageArch);
+        if (!controlData) return res.status(404).json({ error: "Package not found", to: "Package info" });
+        return res.status(200).json(controlData.packageControl);
+      }
+
+      if (isPackageList) {
+        const pkgArray = packagesArray.filter(pkg => pkg.packageControl.Package === packageName && pkg.component === componentName);
+        if (!pkgArray.length) return res.status(404).json({ error: "Package not found", to: "Package list", parms: req.params });
+        return res.status(200).json(pkgArray.map(pkg => pkg.packageControl));
+      }
+
+      if (isPackageLetter) {
+        const pkgArray = packagesArray.filter(pkg => pkg.packageControl.Package[0] === packageLetter && pkg.component === componentName);
+        if (!pkgArray.length) return res.status(404).json({ error: "Packages not found", to: "Package letter" });
+        return res.status(200).json(pkgArray.map(pkg => pkg.packageControl));
+      }
+
+      if (isComponentList) {
+        const pkgArray = packagesArray.filter(pkg => pkg.component === componentName);
+        if (!pkgArray.length) return res.status(404).json({ error: "Component not found" });
+        return res.status(200).json(pkgArray.reduce((main, pkg) => {
+          if (!main[pkg.packageControl.Package]) main[pkg.packageControl.Package] = [];
+          main[pkg.packageControl.Package].push(pkg.packageControl);
+          return main;
+        }, {}));
+      }
+
+      return res.status(200).json(packagesArray.reduce((main, pkg) => {
+        if (!main[pkg.component]) main[pkg.component] = {};
+        if (!main[pkg.component][pkg.packageControl.Package]) main[pkg.component][pkg.packageControl.Package] = [];
+        main[pkg.component][pkg.packageControl.Package].push(pkg.packageControl);
+        return main;
+      }, {}));
+    }).catch(next);
   });
 
-  // List dists
-  app.get("/dists", async (_req, res, next) => package_maneger.getDists().then(dists => res.status(200).json(dists)).catch(next));
-
-  // Packages
+  // Packages stream
   class PackagesData extends stream.Readable {
-    constructor(packages: packageStorage[]) {
+    constructor(packages: packageStorage[], rootPath?: string) {
       super({read(_size) {}});
       let breakLine = false;
       for (const pkg of packages) {
-        const { packageControl } = pkg;
+        const { packageControl, component } = pkg;
         if (!packageControl.Package) continue;
         else if (!packageControl.Version) continue;
         else if (!packageControl.Architecture) continue;
         else if (!packageControl.Size) continue;
         if (breakLine) this.push("\n"); else breakLine = true;
+        packageControl.Filename = path.posix.resolve(
+          "/",
+          rootPath ?? "",
+          "pool",
+          component ?? "main",
+          packageControl.Package,
+          packageControl.Architecture,
+          packageControl.Version,
+          "download.deb"
+        );
         this.push(coreUtils.DebianPackage.createControl(packageControl));
       }
       this.push(null);
@@ -98,10 +153,10 @@ export async function createRouters(package_maneger: packagesManeger, server_con
     let Codename: string;
     if (aptConfig?.Codename) Codename = String(aptConfig.Codename).trim();
 
-    const releaseData: {[keyName: string]: string|{hash: string, size: number, path: string}[]} = {
+    const releaseData: {[keyName: string]: string|(string|{hash: string, size: number, path: string})[]} = {
       Date: new Date().toUTCString(),
-      Architectures: arch.join(" "),
-      Components: components.join(" "),
+      Architectures: arch,
+      Components: components,
       Codename,
       Origin,
       Label,
@@ -163,12 +218,19 @@ export async function createRouters(package_maneger: packagesManeger, server_con
         data = data.filter(Boolean);
         if (!data.length) return main;
         main.push(`${keyName}:`);
-        for (const { hash, size, path } of data) main.push(`  ${hash} ${size} ${path}`);
+        for (const line of data) {
+          if (typeof line === "string") {
+            main[main.length - 1] += ` ${line}`;
+          } else main.push(`  ${line.hash} ${line.size} ${line.path}`);
+        }
       }
       return main;
     }, [] as string[]).join("\n");
 
   }
+
+  // List dists
+  app.get("/dists", async (_req, res, next) => package_maneger.getDists().then(dists => res.status(200).json(dists)).catch(next));
   app.get("/dists/:distName", (req, res, next) => createRelease(req.params.distName, true).then(release => res.status(200).json(release)).catch(next));
   app.get("/dists/:distName/((InRelease|Release(.gpg)?)?)", (req, res, next) => {
     return Promise.resolve().then(async () => {

@@ -77,7 +77,7 @@ export type aptSConfig = {
     collection?: string,
   }|{
     type: "couchdb",
-    url: string,
+    url?: string,
     db?: string,
   },
   globalAptConfig?: {
