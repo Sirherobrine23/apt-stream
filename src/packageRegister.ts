@@ -1,8 +1,9 @@
+import coreUtils, { DebianPackage, httpRequest, httpRequestGithub } from "@sirherobrine23/coreutils";
 import { MongoClient, ServerApiVersion, Filter } from "mongodb";
 import { createReadStream } from "node:fs";
 import { aptSConfig , repositoryFrom} from "./configManeger.js";
-import coreUtils, { DebianPackage, httpRequest, httpRequestGithub } from "@sirherobrine23/coreutils";
 import { format } from "node:util";
+import nano from "nano";
 import stream from "node:stream";
 import path from "node:path";
 import tar from "tar";
@@ -47,7 +48,7 @@ export type packagesManeger = {
   getPackages: (dist?: string, component?: string) => Promise<packageStorage[]>,
   getFileStream: (info: {dist?: string, component: string, packageName: string, version: string, arch: string}) => Promise<stream.Readable>,
   addPackage: (config: packageStorage) => Promise<void>,
-  deletePackage: (config: packageStorage) => Promise<packageStorage>,
+  deletePackage: (config: packageStorage) => Promise<void>,
   close: () => Promise<void>
 };
 
@@ -130,7 +131,7 @@ export async function packageManeger(serverConfig: aptSConfig) {
       await collection.insertOne(config);
     }
     partialConfig.deletePackage = async (config) => {
-      return collection.findOneAndDelete({
+      await collection.findOneAndDelete({
         dist: config.dist,
         component: config.component,
         "packageControl.Package": config.packageControl.Package,
@@ -151,6 +152,68 @@ export async function packageManeger(serverConfig: aptSConfig) {
       const packageData = await collection.findOne(objFind);
       if (!packageData) throw new Error("Package not found!");
       return genericStream(packageData);
+    }
+  } else if (serverConfig.db?.type === "couchdb") {
+    const dbConfig = serverConfig.db;
+    const nanoConnection = nano(serverConfig.db.url);
+    await nanoConnection.db.create(dbConfig.dbName ?? "apt-stream").catch(() => {});
+    const db = nanoConnection.db.use<packageStorage>(dbConfig.dbName ?? "apt-stream");
+
+    partialConfig.getPackages = async (dist, component) => {
+      const data = await db.list({include_docs: true});
+      return data.rows.filter((curr) => (!dist || curr.doc.dist === dist) && (!component || curr.doc.component === component)).map((curr) => curr.doc);
+    }
+
+    partialConfig.getDists = async () => {
+      const data = await db.list();
+      return data.rows.reduce((dists, curr) => {if (!dists.includes(curr.doc.dist)) dists.push(curr.doc.dist); return dists;}, []);
+    }
+
+    partialConfig.getDistInfo = async (dist) => {
+      const packages = await partialConfig.getPackages(dist);
+      if (!packages.length) throw new Error("Distribution not found!");
+      return packages.reduce((dist, curr) => {
+        if (!dist.components) dist.components = [];
+        if (!dist.arch) dist.arch = [];
+        if (!dist.packages) dist.packages = [];
+        if (!dist.components.includes(curr.component)) dist.components.push(curr.component);
+        if (!dist.arch.includes(curr.packageControl.Architecture)) dist.arch.push(curr.packageControl.Architecture);
+        if (!dist.packages.includes(curr.packageControl.Package)) dist.packages.push(curr.packageControl.Package);
+        return dist;
+      }, {} as Partial<Awaited<ReturnType<packagesManeger["getDistInfo"]>>>) as Awaited<ReturnType<packagesManeger["getDistInfo"]>>;
+    }
+
+    partialConfig.addPackage = async (config) => {
+      db.insert(config);
+    }
+
+    partialConfig.deletePackage = async (config) => {
+      await db.find({
+        selector: {
+          dist: config.dist,
+          component: config.component,
+          "packageControl.Package": config.packageControl.Package,
+          "packageControl.Version": config.packageControl.Version,
+          "packageControl.Architecture": config.packageControl.Architecture
+        }
+      }).then((data) => {
+        if (!data.docs.length) throw new Error("Package not found!");
+        return db.destroy(data.docs.at(-1)._id, data.docs.at(-1)._rev);
+      });
+    }
+
+    partialConfig.getFileStream = async (info) => {
+      const data = await db.find({
+        selector: {
+          dist: info.dist,
+          component: info.component,
+          "packageControl.Package": info.packageName,
+          "packageControl.Version": info.version,
+          "packageControl.Architecture": info.arch
+        }
+      });
+      if (!data.docs.length) throw new Error("Package not found!");
+      return genericStream(data.docs.at(-1));
     }
   } else {
     const interalPackages: packageStorage[] = [];
@@ -182,7 +245,7 @@ export async function packageManeger(serverConfig: aptSConfig) {
     partialConfig.deletePackage = async (config) => {
       const packageIndex = interalPackages.findIndex((curr) => curr.dist === config.dist && curr.component === config.component && curr.packageControl.Package === config.packageControl.Package && curr.packageControl.Version === config.packageControl.Version && curr.packageControl.Architecture === config.packageControl.Architecture);
       if (packageIndex === -1) throw new Error("Package not found!");
-      return interalPackages.splice(packageIndex, 1).at(-1);
+      interalPackages.splice(packageIndex, 1);
     }
   }
   return partialConfig as packagesManeger;

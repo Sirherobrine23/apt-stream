@@ -98,8 +98,14 @@ export type aptSConfig = {
     collection?: string,
   }|{
     type: "couchdb",
-    /** URL or Database name */
-    db?: string,
+    /** URL */
+    url: string,
+    /**
+     * Database name
+     *
+     * @default 'apt-stream'
+     */
+    dbName?: string,
   },
   globalAptConfig?: {
     /** Repository origim */
@@ -267,10 +273,12 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
         collection,
       };
     } else if (db.type === "couchdb") {
-      const database = String(db.db?.trim() || "apt-stream");
+      if (!db.url) throw new TypeError("db.url is not defined");
+      const database = String(db.dbName?.trim() || "apt-stream");
       partialConfig.db = {
         type: "couchdb",
-        db: database,
+        url: db.url,
+        dbName: database,
       };
     }
   }

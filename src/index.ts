@@ -384,17 +384,34 @@ yargs(process.argv.slice(2)).alias("h", "help").strictCommands().option("config"
         await attemp();
       } else if (dbType === "couchdb") {
         const attemp = async () => {
-          const { databaseName } = await inquirer.prompt<{couchURL: string, databaseName: string}>([
+          const { couchURL, databaseName } = await inquirer.prompt<{couchURL: string, databaseName: string}>([
             {
               type: "input",
               name: "couchURL",
               message: "CouchDB URL",
-              default: "http://localhost:5984"
+              default: "http://localhost:5984",
+              validate(input) {
+                if (!input) return "Set URL, dont leave blank";
+                if (!(input.startsWith("http://") || input.startsWith("https://"))) return "Invalid URL";
+                return true;
+              },
+            },
+            {
+              type: "input",
+              name: "databaseName",
+              message: "Database name",
+              default: "apt-stream",
+              validate(input) {
+                if (!input) return "Set database name, dont leave blank";
+                if (input.length > 64) return "Database name must be less than 64 characters";
+                return true;
+              }
             }
           ]);
           base.db = {
             type: "couchdb",
-            db: databaseName
+            url: couchURL,
+            dbName: databaseName
           };
         }
         await attemp();
