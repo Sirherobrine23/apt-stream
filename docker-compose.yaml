@@ -1,0 +1,45 @@
+version: "3.9"
+name: apt_stream
+
+volumes:
+  # Save debian packages in a cache directory to avoid downloading them again
+  cache_deb:
+  # Config
+  config:
+
+services:
+  # Mongo server
+  mongo_server:
+    image: mongo
+    container_name: mongo_server_apt_stream
+    restart: always
+
+  # Apt server
+  apt_stream:
+    build: "./"
+    container_name: apt_stream
+    # Restart if the container fails
+    restart: on-failure
+
+    # Wait for mongo server to be ready
+    depends_on:
+      - mongo_server
+
+    # Mount volumes
+    volumes:
+      - cache_deb:/data/cache_deb
+      - config:/data/config
+
+    # Set extra config to "apt-stream server"
+    command:
+      - "--config"
+      - "/data/config"
+
+    # Expose port
+    ports:
+      - "3000:3000/tcp"
+
+    # Set environment variables
+    environment:
+      PORT: "3000"
+      DEB_CACHE_DIR: /data/cache_deb

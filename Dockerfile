@@ -4,5 +4,11 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-RUN npm run build && npm link
+RUN npm run build
+
+# Clean build
+FROM node:lts
+COPY --from=0 /app/ /app
+WORKDIR /app
+RUN npm link
 ENTRYPOINT [ "apt-stream", "server" ]

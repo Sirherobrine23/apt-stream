@@ -60,41 +60,83 @@ export type repositoryFrom = ({
 
 export type aptSConfig = {
   server: {
+    /** HTTP Server port listen */
     portListen?: number,
+    /** HTTPS Server port listen */
+    httpsPortListen?: {
+      port: number,
+      key: string,
+      cert: string
+    },
+    /** Run http server in cluster mode to many requests */
     cluster?: number,
+    /** Enable repository sign with pgp/gpg keys. */
     pgp?: {
+      /** Private key, internal not public access */
       privateKey: string,
+      /**
+       * Public key, to import to user import and save in /etc/apt/trusted.gpg.d/$NAME.gpg
+       *
+       * @example `curl -L apt.sirherobrine23.org/public.key | gpg --dearmor --yes -o - | sudo tee /etc/apt/trusted.gpg.d/apt.sirherobrine23.org.gpg > /dev/null`
+       */
       publicKey: string,
+      /** PGP key passphrase */
       passphrase?: string,
+      // Key path save dont to final file
       privateKeySave?: string,
       publicKeySave?: string,
     },
   },
+  /** Save packages loaded to database to not reload data on start */
   db?: {
     type: "mongodb",
+    /** MongoDB Url with mongodb:// or mongodb+srv:// protocoll */
     url: string,
+    /** Database name */
     db?: string,
+    /** Collection name */
     collection?: string,
   }|{
     type: "couchdb",
-    url?: string,
+    /** URL or Database name */
     db?: string,
   },
   globalAptConfig?: {
+    /** Repository origim */
     Origin?: string,
+    /** Repository host, example: apt.sirherobrine23.org */
     urlHost?: string,
+    /**
+     * Old style packages (one package and version per arch)
+     *
+     * @deprecated Dont use to new apt versions repositorys
+     * @default false
+     */
     oldPackagesStyles?: boolean
   },
+  /**
+   * Packages origim and apt structure
+   */
   repositorys: {
     [distName: string]: {
+      /** Repository soucers array */
       from: repositoryFrom[],
+      /**
+       * Set Distribution info to extends globalAptConfig
+       */
       aptConfig?: {
+        /** Replace globalAptConfig origim if seted */
         Origin?: string,
+        /** Repository lebel */
         Label?: string,
+        /** Repository Codename */
+        Codename?: string,
+        /** Repository Version (Ubuntu) */
         Version?: string,
+        /** Repository description (single line) */
         Description?: string,
+        /** Enable (In)Release hash files */
         enableHashes?: boolean,
-        Codename?: string
       }
     }
   }
@@ -137,20 +179,27 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
           throw new Error(format("%s is not a valid config file", config));
         }
       }
-    } else if (config.startsWith("env:")||config.slice(0, 8).trim().toLowerCase().startsWith("base64:")) {
-      if (config.startsWith("env:")) config = process.env[config.slice(4)];
-      if (!config) throw new TypeError(format("env:%s is not defined", config));
-      if (config.slice(0, 8).trim().toLowerCase().startsWith("base64:")) config = Buffer.from(config.slice(8), "base64").toString();
+    } else if (config?.startsWith("env:")||config?.slice(0, 10).trim().toLowerCase().startsWith("base64:")) {
+      if (config.startsWith("env:")) {
+        if (!process.env[config.slice(4)]?.trim()) throw new TypeError(format("env:%s is not defined", config));
+        config = process.env[config.slice(4)]?.trim();
+      }
+      if (config.slice(0, 10).trim().toLowerCase().startsWith("base64:")) config = Buffer.from(config.slice(8), "base64").toString();
       try {
         configData = yaml.parse(config);
       } catch {
         try {
           configData = JSON.parse(config);
         } catch {
-          throw new Error(format("Invalid config file, received: %s", config));
+          throw new Error("Unknow config");
         }
       }
     } else if (await coreUtils.extendFs.exists(config)) {
+      if (await coreUtils.extendFs.isDirectory(config)) {
+        const file = (await fs.readdir(config)).find(file => /(\.)?apt(s)?(_)?(stream)?\.(json|ya?ml)$/i.test(file));
+        if (!file) throw new Error(format("Cannot find config file in %O", config));
+        config = path.join(config, file);
+      }
       const fixedInternal: string = config;
       const localFile = await fs.readFile(fixedInternal, "utf8");
       try {
@@ -159,7 +208,7 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
         try {
           configData = JSON.parse(localFile);
         } catch {
-          throw new Error(format("%s is not a valid config file", config));
+          throw new Error("Unknow config file");
         }
       }
     } else throw new Error(format("%s not supported load", config));
@@ -209,8 +258,8 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
     const db = configData.db;
     if (db.type === "mongodb") {
       if (!db.url) throw new TypeError("db.url is not defined");
-      const collection = db.collection?.trim() ?? "apt-stream";
-      const database = db.db?.trim() ?? "apt-stream";
+      const collection = db.collection?.trim() || "apt-stream";
+      const database = db.db?.trim() || "apt-stream";
       partialConfig.db = {
         type: "mongodb",
         url: db.url,
@@ -218,11 +267,9 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
         collection,
       };
     } else if (db.type === "couchdb") {
-      if (!db.url) throw new TypeError("db.url is not defined");
-      const database = db.db?.trim() ?? "apt-stream";
+      const database = String(db.db?.trim() || "apt-stream");
       partialConfig.db = {
         type: "couchdb",
-        url: db.url,
         db: database,
       };
     }
