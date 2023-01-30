@@ -26,7 +26,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Build image
-      uses: docker/build-push-action@v3
+      uses: docker/build-push-action@v4
       with:
         cache-from: ${{ github.event_name == 'push' && 'type=gha,scope=${{ github.ref }}_${{ github.repo }}' || '' }}
         platforms: "linux/amd64,linux/arm64"
