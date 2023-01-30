@@ -1,22 +1,34 @@
-import coreUtils, { DockerRegistry } from "@sirherobrine23/coreutils";
+import coreUtils, { Debian, http, Cloud } from "@sirherobrine23/coreutils";
 import { promises as fs } from "node:fs";
 import { format } from "node:util";
 import openpgp from "openpgp";
 import path from "node:path";
 import yaml from "yaml";
 
-export type repositoryFrom = ({
+export type repositoryFrom = {
+  /**
+   * Dist component
+   * @default main
+   */
+  componentName?: string,
+} & ({
   type: "mirror",
+  /**
+   * Repotorio mirror url
+   *
+   * @example `http://archive.ubuntu.com/ubuntu`
+   */
   url: string,
+  /**
+   * Distribuition name in mirror
+   * @example `focal`
+   */
   dists: {
     [distName: string]: {
       components?: string[],
       archs?: string[],
     }
   }
-}|{
-  type: "local",
-  path: string,
 }|{
   type: "http",
   url: string,
@@ -26,8 +38,19 @@ export type repositoryFrom = ({
   }
 }|{
   type: "github",
+  /**
+   * Repository owner
+   * @example `Sirherobrine23`
+   */
   owner: string,
+  /**
+   * Repository name
+   * @example `apt-stream`
+   */
   repository: string,
+  /**
+   * Auth token, not required if public repository
+   */
   token?: string,
 }&({
   subType: "release",
@@ -36,29 +59,21 @@ export type repositoryFrom = ({
   subType: "branch",
   branch: string,
 })|{
-  type: "docker",
-  image: string,
-  platformConfig?: DockerRegistry.Manifest.platfomTarget
-}|{
   type: "google_driver",
   id?: string[],
   app: {
     secret: string,
     id: string,
-    token?: string,
+    token?: Cloud.googleCredential,
   }
 }|{
   type: "oracle_bucket",
-  region: string,
-  bucket: string,
-  namespace: string,
-  auth: any,
   path?: string[],
-}) & {
-  componentName?: string,
-};
+  authConfig: Cloud.oracleOptions
+});
 
 export type aptSConfig = {
+  saveConfig?(): Promise<void>,
   server: {
     /** HTTP Server port listen */
     portListen?: number,
@@ -172,10 +187,11 @@ export async function saveConfig(config: aptSConfig|Partial<aptSConfig>, file: s
 export default configManeger;
 export async function configManeger(config?: string|Partial<aptSConfig>) {
   if (!config) throw new TypeError("config is not defined");
+  const partialConfig: Partial<aptSConfig> = {};
   let configData: Partial<aptSConfig>;
   if (typeof config === "string") {
     if (config.startsWith("http")) {
-      let remoteConfig = await coreUtils.httpRequest.bufferFetch(config);
+      let remoteConfig = await http.bufferRequest(config);
       try {
         configData = yaml.parse(remoteConfig.toString());
       } catch {
@@ -200,8 +216,8 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
           throw new Error("Unknow config");
         }
       }
-    } else if (await coreUtils.extendFs.exists(config)) {
-      if (await coreUtils.extendFs.isDirectory(config)) {
+    } else if (await coreUtils.extendsFS.exists(config)) {
+      if (await coreUtils.extendsFS.isDirectory(config)) {
         const file = (await fs.readdir(config)).find(file => /(\.)?apt(s)?(_)?(stream)?\.(json|ya?ml)$/i.test(file));
         if (!file) throw new Error(format("Cannot find config file in %O", config));
         config = path.join(config, file);
@@ -210,9 +226,11 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
       const localFile = await fs.readFile(fixedInternal, "utf8");
       try {
         configData = yaml.parse(localFile);
+        partialConfig.saveConfig = async () => fs.writeFile(fixedInternal, yaml.stringify(await configManeger(configData)));
       } catch {
         try {
           configData = JSON.parse(localFile);
+          partialConfig.saveConfig = async () => fs.writeFile(fixedInternal, JSON.stringify(await configManeger(configData), null, 2));
         } catch {
           throw new Error("Unknow config file");
         }
@@ -221,7 +239,6 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
   } else configData = config;
   if (!configData) throw new Error("configData is not defined");
   if (!configData.repositorys) configData.repositorys = {};
-  const partialConfig: Partial<aptSConfig> = {};
 
   // Server config
   partialConfig.server = {};
@@ -230,11 +247,11 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
   if (configData.server?.pgp) {
     const pgp = configData.server.pgp;
     if (pgp.publicKey?.trim() && pgp.privateKey?.trim()) {
-      if (await coreUtils.extendFs.exists(pgp.publicKey)) {
+      if (await coreUtils.extendsFS.exists(pgp.publicKey)) {
         pgp.publicKeySave = path.resolve(pgp.publicKey);
         pgp.publicKey = await fs.readFile(pgp.publicKey, "utf8");
       }
-      if (await coreUtils.extendFs.exists(pgp.privateKey)) {
+      if (await coreUtils.extendsFS.exists(pgp.privateKey)) {
         pgp.privateKeySave = path.resolve(pgp.privateKey);
         pgp.privateKey = await fs.readFile(pgp.privateKey, "utf8");
       }
@@ -300,15 +317,7 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
     if (!dist.from) throw new TypeError(format("repositorys.%s.from is not defined", distName));
     for (const from of dist.from) {
       if (typeof from.type !== "string") throw new TypeError(format("repositorys.%s.from.type is not defined", distName));
-      if (from.type === "local") {
-        if (!from.path) throw new TypeError(format("repositorys.%s.from.path is not defined", distName));
-        if (!await coreUtils.extendFs.exists(from.path)) throw new Error(format("repositorys.%s.from.path %s not exists", distName, from.path));
-        fixedDist.from.push({
-          type: "local",
-          componentName: from.componentName,
-          path: from.path,
-        });
-      } else if (from.type === "http") {
+      if (from.type === "http") {
         if (!from.url) throw new TypeError(format("repositorys.%s.from.url is not defined", distName));
         fixedDist.from.push({
           type: "http",
@@ -351,25 +360,17 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
           id: from.id.filter((id) => typeof id === "string").map((id) => id.trim()),
         });
       } else if (from.type === "oracle_bucket") {
-        if (!(from.bucket && from.namespace && from.region)) throw new TypeError(format("repositorys.%s.from.bucket and repositorys.%s.from.region is not defined", distName, distName));
+        if (!(from.authConfig)) throw new TypeError(format("repositorys.%s.from.authConfig is not defined", distName));
+        if (!(from.authConfig.name && from.authConfig.namespace && from.authConfig.region && from.authConfig.auth)) throw new TypeError(format("repositorys.%s.from.authConfig.name, repositorys.%s.from.authConfig.namespace, repositorys.%s.from.authConfig.region and repositorys.%s.from.authConfig.auth is not defined", distName, distName, distName, distName));
         fixedDist.from.push({
           type: "oracle_bucket",
           componentName: from.componentName,
-          bucket: from.bucket,
-          namespace: from.namespace,
-          region: from.region,
-          auth: from.auth,
           path: (from.path ?? []).filter((path) => typeof path === "string").map((path) => path.trim()),
-        });
-      } else if (from.type === "docker") {
-        if (!(from.image)) throw new TypeError(format("repositorys.%s.from.image is not defined", distName));
-        fixedDist.from.push({
-          type: "docker",
-          componentName: from.componentName,
-          image: from.image,
-          platformConfig: {
-            platform: from.platformConfig?.platform,
-            arch: from.platformConfig?.arch,
+          authConfig: {
+            name: from.authConfig.name,
+            namespace: from.authConfig.namespace,
+            region: from.authConfig.region,
+            auth: from.authConfig.auth,
           }
         });
       } else if (from.type === "mirror") {
@@ -384,10 +385,10 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
           inReleaseURL.pathname = path.posix.join(inReleaseURL.pathname, "InRelease");
           ReleaseURL.pathname = path.posix.join(ReleaseURL.pathname, "Release");
 
-          let release = await coreUtils.httpRequest.bufferFetch(inReleaseURL.toString()).catch(() => coreUtils.httpRequest.bufferFetch(ReleaseURL.toString())).then(res => res.data).catch(() => null);
+          let release = await http.bufferRequest(inReleaseURL).catch(() => http.bufferRequest(ReleaseURL)).then(res => res.body).catch(() => null);
           if (!release) throw new Error(format("repositorys.%s.from.dists.%s can not get Release file", distName, mirroDist));
           if (release.subarray(0, 6).toString().startsWith("----")) release = Buffer.from(((await openpgp.readCleartextMessage({cleartextMessage: release.toString()})).getText()), "utf8");
-          const releaseData = await coreUtils.DebianPackage.parseRelease(release);
+          const releaseData = Debian.apt.parseRelease(release);
 
           if (releaseData.Architectures !== undefined) {
             const archs = releaseData.Architectures as string[];
