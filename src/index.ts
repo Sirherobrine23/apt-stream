@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 import "./log.js";
-import { configManeger } from "./configManeger.js";
+import { aptSConfig, configManeger, saveConfig } from "./configManeger.js";
 import packagesStorage from "./packageStorage.js";
+import createConfig from "./createConfig.js";
+import coreUtils from "@sirherobrine23/coreutils";
 import aptRoute from "./aptRoute.js";
 import cluster from "node:cluster";
 import express from "express";
 import https from "node:https";
 import yargs from "yargs";
 import os from "node:os";
+import path from "node:path";
+process.title = "aptStream";
 
-yargs(process.argv.slice(2)).version(false).help(true).alias("h", "help").demandCommand().command("server", "Start server", async yargs => {
-  const options = yargs.strict().option("port", {
+yargs(process.argv.slice(2)).version(false).help(true).alias("h", "help").demandCommand().strictCommands().command("server", "Start server", async yargs => {
+  const options = yargs.strictOptions().option("port", {
     alias: "p",
     type: "number",
     default: 8080,
@@ -23,7 +27,7 @@ yargs(process.argv.slice(2)).version(false).help(true).alias("h", "help").demand
   }).option("config", {
     alias: "C",
     type: "string",
-    default: "aptStream.json",
+    default: "aptStream.yaml",
     description: "Config file"
   }).parseSync();
 
@@ -125,4 +129,21 @@ yargs(process.argv.slice(2)).version(false).help(true).alias("h", "help").demand
       cert: httpsConfig.cert,
     }, app).listen(httpsPort, function() {const address = this.address() as any; console.log("Https server listening on port %d", address?.port ?? "No Port");});
   }
+}).command("maneger", "Maneger packages and config", async yargs => {
+  const options = yargs.strictOptions().option("config", {
+    alias: "C",
+    type: "string",
+    default: "aptStream.yaml",
+    description: "Config file"
+  }).option("newConfig", {
+    alias: "N",
+    type: "boolean",
+    default: false,
+    description: "Create new config file"
+  }).parseSync();
+  let config: Partial<aptSConfig>;
+  if (options.newConfig||!await coreUtils.extendsFS.exists(options.config)) config = await createConfig.createConfig(path.resolve(path.dirname(options.config)));
+  else config = await configManeger(options.config);
+  config = await createConfig.manegerRepositorys(config);
+  return saveConfig(config, options.config);
 }).parseAsync();

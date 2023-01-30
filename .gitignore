@@ -1,4 +1,5 @@
 /apt*.y[a]ml
+/apt*.json
 .repoTest/
 thunder-tests
 *.deb
