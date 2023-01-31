@@ -1,25 +1,94 @@
 import { aptSConfig, repositoryFrom } from "./configManeger.js";
-import inquirer from "inquirer";
-import openpgp from "openpgp";
-import ora from "ora";
-import os from "node:os";
-import path from "node:path";
 import { Cloud, http } from "@sirherobrine23/coreutils";
-import { format } from "node:util";
 import { extendsFS } from "@sirherobrine23/coreutils/src/packages/extends/src/index.js";
 import { readFile } from "node:fs/promises";
+import { format } from "node:util";
+import acmeClient from "acme-client";
+import inquirer from "inquirer";
+import openpgp from "openpgp";
+import express from "express";
+import path from "node:path";
+import ora from "ora";
+import os from "node:os";
 
 export default {createConfig, manegerRepositorys};
+
+export async function createHTTPScertificate(email: string, domains: string[]) {
+  const client = new acmeClient.Client({
+    accountKey: await acmeClient.crypto.createPrivateKey(),
+    directoryUrl: acmeClient.directory.letsencrypt.production,
+  });
+
+  await client.createAccount({
+    termsOfServiceAgreed: true,
+    contact: [`mailto:${email}`]
+  });
+
+  const [key, csr] = await acmeClient.crypto.createCsr({
+    commonName: domains[0],
+    altNames: domains.slice(1)
+  });
+  let close: () => void;
+  const cert = await client.auto({
+    termsOfServiceAgreed: true,
+    email: `mailto:${email}`,
+    challengePriority: ["dns-01"],
+    csr,
+    async challengeCreateFn(authz, challenge, keyAuthorization) {
+      if (challenge.type === "dns-01") {
+        const dnsRecord = `_acme-challenge.${authz.identifier.value}`;
+        console.log("Would create TXT record %O with value %O", dnsRecord, keyAuthorization);
+        return;
+      }
+      const { ipv4, ipv6 } = await http.getExternalIP();
+      if (ipv6) console.log("Add AAA (%O) Record for %O", authz.identifier.value, ipv6);
+      if (ipv4) console.log("Add A (%O) Record for %O", authz.identifier.value, ipv4);
+      const app = express();
+      app.use((req, _2, next) => {
+        next();
+        console.log(req.path);
+      })
+      app.get("/.well-known/acme-challenge/*", (req, res) => {
+        res.send(keyAuthorization);
+      });
+      const server = app.listen(80, () => {
+        console.log(`Listening on port 80`);
+      });
+      close = () => server.close();
+    },
+    async challengeRemoveFn(authz, challenge, keyAuthorization) {
+      if (close) {
+        console.log("Closing server");
+        close();
+      } else {
+        const dnsRecord = `_acme-challenge.${authz.identifier.value}`;
+        console.log("Would remove TXT record %O with value %O", dnsRecord, keyAuthorization);
+      }
+    },
+  });
+
+  return {
+    csr: csr.toString(),
+    key: key.toString(),
+    cert: cert.toString()
+  };
+}
 
 export async function createConfig(configDir: string) {
   console.log("Welcome to apt-stream, this is setup wizard, please answer the following questions");
   const partialConfig: Partial<aptSConfig> = {};
-  const basicInput = await inquirer.prompt<{portListen: number|string, cluster: number|string, pgpGen: boolean, useDB: boolean}>([
+  const basicInput = await inquirer.prompt<{portListen: number|string, https: boolean, cluster: number|string, pgpGen: boolean, useDB: boolean}>([
     {
       type: "input",
       name: "portListen",
       message: "HTTP Port to listen",
       default: 3000
+    },
+    {
+      type: "confirm",
+      name: "https",
+      message: "User HTTPs?",
+      default: false
     },
     {
       type: "input",
