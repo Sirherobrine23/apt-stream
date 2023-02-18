@@ -1,6 +1,7 @@
 import { packagesFunctions } from "./packageStorage.js";
 import { aptSConfig } from "./configManeger.js";
-import coreUtils, { Debian } from "@sirherobrine23/coreutils";
+import { Debian } from "@sirherobrine23/coreutils";
+import { extendsCrypto } from "@sirherobrine23/extends";
 import express from "express";
 import openpgp from "openpgp";
 import stream from "node:stream";
@@ -49,9 +50,9 @@ export default async function createRoute(serverConfig: aptSConfig, packageManeg
     })();
 
     return Promise.all([
-      coreUtils.extendsCryto.createHashAsync(raw),
-      coreUtils.extendsCryto.createHashAsync(gzip),
-      coreUtils.extendsCryto.createHashAsync(xz),
+      extendsCrypto.createHashAsync(raw),
+      extendsCrypto.createHashAsync(gzip),
+      extendsCrypto.createHashAsync(xz),
     ]).then(([rawHash, gzipHash, xzHash]) => {
       return {
         raw: rawHash,
