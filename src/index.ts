@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import "./log.js";
 import { aptSConfig, configManeger, saveConfig } from "./configManeger.js";
+import { extendsFS } from "@sirherobrine23/extends";
 import packagesStorage from "./packageStorage.js";
 import createConfig from "./createConfig.js";
-import coreUtils from "@sirherobrine23/coreutils";
 import aptRoute from "./aptRoute.js";
 import cluster from "node:cluster";
 import express from "express";
@@ -13,7 +13,8 @@ import os from "node:os";
 import path from "node:path";
 process.title = "aptStream";
 
-yargs(process.argv.slice(2)).version(false).help(true).alias("h", "help").demandCommand().strictCommands().command("server", "Start server", async yargs => {
+yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCommand().alias("h", "help")
+.command("server", "Start server", async yargs => {
   const options = yargs.strictOptions().option("port", {
     alias: "p",
     type: "number",
@@ -129,7 +130,9 @@ yargs(process.argv.slice(2)).version(false).help(true).alias("h", "help").demand
       cert: httpsConfig.cert,
     }, app).listen(httpsPort, function() {const address = this.address() as any; console.log("Https server listening on port %d", address?.port ?? "No Port");});
   }
-}).command("maneger", "Maneger packages and config", async yargs => {
+})
+
+.command("maneger", "Maneger packages and config", async yargs => {
   const options = yargs.strictOptions().option("config", {
     alias: "C",
     type: "string",
@@ -142,8 +145,10 @@ yargs(process.argv.slice(2)).version(false).help(true).alias("h", "help").demand
     description: "Create new config file"
   }).parseSync();
   let config: Partial<aptSConfig>;
-  if (options.newConfig||!await coreUtils.extendsFS.exists(options.config)) config = await createConfig.createConfig(path.resolve(path.dirname(options.config)));
+  if (options.newConfig||!await extendsFS.exists(options.config)) config = await createConfig.createConfig(path.resolve(path.dirname(options.config)));
   else config = await configManeger(options.config);
   config = await createConfig.manegerRepositorys(config);
   return saveConfig(config, options.config);
-}).parseAsync();
+})
+
+.parseAsync();

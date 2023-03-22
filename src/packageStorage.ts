@@ -1,7 +1,7 @@
 import { aptSConfig, repositoryFrom } from "./configManeger.js";
-import { Readable } from "node:stream";
-import { Debian } from "@sirherobrine23/coreutils";
 import { getFileStream } from "./packgesLoad.js";
+import { Readable } from "node:stream";
+import Debian from "@sirherobrine23/debian";
 import mongoDB from "mongodb";
 import nano from "nano";
 

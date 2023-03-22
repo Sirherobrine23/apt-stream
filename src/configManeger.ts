@@ -1,9 +1,12 @@
-import coreUtils, { Debian, http, Cloud } from "@sirherobrine23/coreutils";
+import * as Cloud from "@sirherobrine23/cloud";
 import { promises as fs } from "node:fs";
+import { extendsFS } from "@sirherobrine23/extends";
 import { format } from "node:util";
+import { apt } from "@sirherobrine23/debian";
 import openpgp from "openpgp";
 import path from "node:path";
 import yaml from "yaml";
+import http from "@sirherobrine23/http";
 
 export type repositoryFrom = {
   /**
@@ -64,12 +67,12 @@ export type repositoryFrom = {
   app: {
     secret: string,
     id: string,
-    token?: Cloud.googleCredential,
+    token?: Cloud.googleDriver.googleCredential,
   }
 }|{
   type: "oracle_bucket",
   path?: string[],
-  authConfig: Cloud.oracleOptions
+  authConfig: Cloud.oracleBucket.oracleOptions
 });
 
 export type aptSConfig = {
@@ -216,8 +219,8 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
           throw new Error("Unknow config");
         }
       }
-    } else if (await coreUtils.extendsFS.exists(config)) {
-      if (await coreUtils.extendsFS.isDirectory(config)) {
+    } else if (await extendsFS.exists(config)) {
+      if (await extendsFS.isDirectory(config)) {
         const file = (await fs.readdir(config)).find(file => /(\.)?apt(s)?(_)?(stream)?\.(json|ya?ml)$/i.test(file));
         if (!file) throw new Error(format("Cannot find config file in %O", config));
         config = path.join(config, file);
@@ -247,11 +250,11 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
   if (configData.server?.pgp) {
     const pgp = configData.server.pgp;
     if (pgp.publicKey?.trim() && pgp.privateKey?.trim()) {
-      if (await coreUtils.extendsFS.exists(pgp.publicKey)) {
+      if (await extendsFS.exists(pgp.publicKey)) {
         pgp.publicKeySave = path.resolve(pgp.publicKey);
         pgp.publicKey = await fs.readFile(pgp.publicKey, "utf8");
       }
-      if (await coreUtils.extendsFS.exists(pgp.privateKey)) {
+      if (await extendsFS.exists(pgp.privateKey)) {
         pgp.privateKeySave = path.resolve(pgp.privateKey);
         pgp.privateKey = await fs.readFile(pgp.privateKey, "utf8");
       }
@@ -388,7 +391,7 @@ export async function configManeger(config?: string|Partial<aptSConfig>) {
           let release = await http.bufferRequest(inReleaseURL).catch(() => http.bufferRequest(ReleaseURL)).then(res => res.body).catch(() => null);
           if (!release) throw new Error(format("repositorys.%s.from.dists.%s can not get Release file", distName, mirroDist));
           if (release.subarray(0, 6).toString().startsWith("----")) release = Buffer.from(((await openpgp.readCleartextMessage({cleartextMessage: release.toString()})).getText()), "utf8");
-          const releaseData = Debian.apt.parseRelease(release);
+          const releaseData = apt.parseRelease(release);
 
           if (releaseData.Architectures !== undefined) {
             const archs = releaseData.Architectures as string[];

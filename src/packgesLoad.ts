@@ -1,7 +1,9 @@
+import httpCore, { Github } from "@sirherobrine23/http";
+import Debian, { apt } from "@sirherobrine23/debian";
 import { packageStorge, packagesFunctions } from "./packageStorage.js";
 import { EventEmitter } from "node:events";
 import { aptSConfig } from "./configManeger.js";
-import coreUtils, { Debian } from "@sirherobrine23/coreutils";
+import coreCloud from "@sirherobrine23/cloud";
 import openpgp from "openpgp";
 import path from "node:path";
 import zlib from "node:zlib";
@@ -12,7 +14,7 @@ export async function getFileStream(packageInfo: packageStorge): Promise<any> {
 
   if (restore.from === "http") {
     const { url, headers, query } = restore;
-    return coreUtils.http.streamRequest(url, {
+    return httpCore.streamRequest(url, {
       headers,
       query,
     });
@@ -20,7 +22,7 @@ export async function getFileStream(packageInfo: packageStorge): Promise<any> {
     const { info } = restore;
     if (repository.type === "google_driver") {
       const { app } = repository;
-      const gDrive = await coreUtils.Cloud.GoogleDriver({
+      const gDrive = await coreCloud.googleDriver({
         clientID: app.id,
         clientSecret: app.secret,
         token: app.token,
@@ -32,7 +34,7 @@ export async function getFileStream(packageInfo: packageStorge): Promise<any> {
       return gDrive.getFileStream(info);
     } else if (repository.type === "oracle_bucket") {
       const { authConfig } = repository;
-      const oracleBucket = await coreUtils.Cloud.oracleBucket(authConfig);
+      const oracleBucket = await coreCloud.oracleBucket(authConfig);
       return oracleBucket.getFileStream(info);
     }
   }
@@ -58,7 +60,7 @@ export function loadPackages(serverConfig: aptSConfig, packageStorage: packagesF
         console.log(reponame, from, aptConfig);
         if (from.type === "http") {
           const { auth } = from;
-          const data = await Debian.parsePackage(await coreUtils.http.streamRequest(from.url, {headers: auth.header, query: auth.query}));
+          const data = await Debian.parsePackage(await httpCore.streamRequest(from.url, {headers: auth.header, query: auth.query}));
           await packageStorage.addPackage(reponame, data.control, from, {
             from: "http",
             url: from.url,
@@ -67,8 +69,8 @@ export function loadPackages(serverConfig: aptSConfig, packageStorage: packagesF
           }).then(data => event.emit("add", data)).catch(err => event.emit("error", err));
         } else if (from.type === "oracle_bucket") {
           let { path: cloudPath = [] } = from;
-          const oracleBucket = await coreUtils.Cloud.oracleBucket(from.authConfig);
-          if (!cloudPath.length) cloudPath = (await oracleBucket.listFiles()).map(file => file.path).filter(path => path.endsWith(".deb"));
+          const oracleBucket = await coreCloud.oracleBucket(from.authConfig);
+          if (!cloudPath.length) cloudPath = (await oracleBucket.listFiles()).map(file => file.name).filter(path => path.endsWith(".deb"));
           for (const remotePath of cloudPath) {
             const data = await Debian.parsePackage(await oracleBucket.getFileStream(remotePath));
             await packageStorage.addPackage(reponame, data.control, from, {
@@ -78,7 +80,7 @@ export function loadPackages(serverConfig: aptSConfig, packageStorage: packagesF
           }
         } else if (from.type === "google_driver") {
           let { id: fileIDs = [] } = from;
-          const gDrive = await coreUtils.Cloud.GoogleDriver({
+          const gDrive = await coreCloud.googleDriver({
             clientID: from.app.id,
             clientSecret: from.app.secret,
             token: from.app.token,
@@ -102,13 +104,13 @@ export function loadPackages(serverConfig: aptSConfig, packageStorage: packagesF
           }
         } else if (from.type === "github") {
           const { owner, repository, token, subType } = from;
-          const github = await coreUtils.http.Github.GithubManeger(owner, repository, token);
+          const github = await Github.GithubManeger(owner, repository, token);
           if (subType === "release") {
             const { tag } = from;
             const releases = await (tag?.length > 0 ? Promise.all(tag.map(async tag => github.getRelease(tag))).then(res => res.flat()) : github.getRelease());
             for (const release of releases) {
               for (const asset of release.assets) {
-                const data = await Debian.parsePackage(await coreUtils.http.streamRequest(asset.browser_download_url));
+                const data = await Debian.parsePackage(await httpCore.streamRequest(asset.browser_download_url));
                 await packageStorage.addPackage(reponame, data.control, from, {
                   from: "http",
                   url: asset.browser_download_url,
@@ -121,7 +123,7 @@ export function loadPackages(serverConfig: aptSConfig, packageStorage: packagesF
             for (const file of tree) {
               const raw = new URL("https://raw.githubusercontent.com");
               raw.pathname = path.posix.resolve("/", owner, repository, branch, file.path);
-              const data = await Debian.parsePackage(await coreUtils.http.streamRequest(raw, {headers: token ? {Authorization: `token ${token}`} : {}}));
+              const data = await Debian.parsePackage(await httpCore.streamRequest(raw, {headers: token ? {Authorization: `token ${token}`} : {}}));
               await packageStorage.addPackage(reponame, data.control, from, {
                 from: "http",
                 url: raw.toString()
@@ -137,8 +139,8 @@ export function loadPackages(serverConfig: aptSConfig, packageStorage: packagesF
             const Release = base.toString();
             base.pathname = path.posix.resolve(base.pathname, "../InRelease");
             const InRelease = base.toString();
-            const data = await coreUtils.http.bufferRequest(Release).then(res => res.body).catch(() => coreUtils.http.bufferRequest(InRelease).then(async release => Buffer.from(((await openpgp.readCleartextMessage({cleartextMessage: release.body.toString()})).getText()), "utf8")));
-            const Relase = Debian.apt.parseRelease(data);
+            const data = await httpCore.bufferRequest(Release).then(res => res.body).catch(() => httpCore.bufferRequest(InRelease).then(async release => Buffer.from(((await openpgp.readCleartextMessage({cleartextMessage: release.body.toString()})).getText()), "utf8")));
+            const Relase = apt.parseRelease(data);
             if (!Relase.Architectures) {
               const archs = Relase.Architectures as string[];
               if (!mirrorDists.archs?.length) mirrorDists.archs = archs;
@@ -155,8 +157,8 @@ export function loadPackages(serverConfig: aptSConfig, packageStorage: packagesF
                 const base = new URL(url);
                 base.pathname = path.posix.resolve(base.pathname, "dists", dist, component, "binary-" + arch, "Packages");
                 const Packages = base.toString();
-                const packagesStream = await coreUtils.http.streamRequest(Packages).catch(() => coreUtils.http.streamRequest(Packages+".gz").then(res => res.pipe(zlib.createGunzip()))).catch(() => coreUtils.http.streamRequest(Packages+".xz").then(res => res.pipe(lzma.Decompressor())));
-                const packages = await Debian.apt.parsePackages(packagesStream);
+                const packagesStream = await httpCore.streamRequest(Packages).catch(() => httpCore.streamRequest(Packages+".gz").then(res => res.pipe(zlib.createGunzip()))).catch(() => httpCore.streamRequest(Packages+".xz").then(res => res.pipe(lzma.Decompressor())));
+                const packages = await apt.parsePackages(packagesStream);
                 for (const control of packages) {
                   const urlBase = new URL(url);
                   urlBase.pathname = path.posix.resolve(urlBase.pathname, control.Filename);

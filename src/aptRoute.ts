@@ -1,9 +1,9 @@
 import { packagesFunctions } from "./packageStorage.js";
 import { aptSConfig } from "./configManeger.js";
-import { Debian } from "@sirherobrine23/coreutils";
 import { extendsCrypto } from "@sirherobrine23/extends";
 import express from "express";
 import openpgp from "openpgp";
+import Debian from "@sirherobrine23/debian";
 import stream from "node:stream";
 import path from "node:path";
 import zlib from "node:zlib";

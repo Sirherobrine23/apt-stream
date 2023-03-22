@@ -1,12 +1,15 @@
 import { aptSConfig, repositoryFrom } from "./configManeger.js";
-import { Cloud, http } from "@sirherobrine23/coreutils";
-import { extendsFS } from "@sirherobrine23/coreutils/src/packages/extends/src/index.js";
+import { googleCredential } from "@sirherobrine23/cloud/src/googleDrive.js";
+import { oracleOptions } from "@sirherobrine23/cloud/src/oracleBucket.js";
+import { extendsFS } from "@sirherobrine23/extends";
 import { readFile } from "node:fs/promises";
 import { format } from "node:util";
+import http, { Github } from "@sirherobrine23/http";
 import acmeClient from "acme-client";
 import inquirer from "inquirer";
 import openpgp from "openpgp";
 import express from "express";
+import Cloud from "@sirherobrine23/cloud";
 import path from "node:path";
 import ora from "ora";
 import os from "node:os";
@@ -407,7 +410,7 @@ async function createFrom(): Promise<repositoryFrom> {
       },
     ]);
     if (!token?.trim()) token = undefined;
-    const gh = await http.Github.GithubManeger(owner, repository, token);
+    const gh = await Github.GithubManeger(owner, repository, token);
     if (variant === "repo") {
       const remoteBranches = await gh.branchList().then(a => a.flat().map(b => b.name));
       const { branch } = await inquirer.prompt<{branch: string}>({
@@ -457,8 +460,8 @@ async function createFrom(): Promise<repositoryFrom> {
     } else throw new Error("Unknown github variant");
   } else if (repoType === "google_driver") {
     const data = await inquirer.prompt<{appID: string, appSecret: string}>([]);
-    let token: Cloud.googleCredential;
-    const gdrive = await Cloud.GoogleDriver({
+    let token: googleCredential;
+    const gdrive = await Cloud.googleDriver({
       clientID: data.appID,
       clientSecret: data.appSecret,
       callback(err, data) {
@@ -576,7 +579,7 @@ async function createFrom(): Promise<repositoryFrom> {
       }
     ]);
 
-    const configAuth: Cloud.oracleOptions = {
+    const configAuth: oracleOptions = {
       namespace: userConfig.namespace,
       name: userConfig.name,
       region: userConfig.region,
@@ -590,15 +593,15 @@ async function createFrom(): Promise<repositoryFrom> {
       }
     };
 
-    const files = (await (await Cloud.oracleBucket(configAuth)).listFiles()).filter(file => file.path.endsWith(".deb"));
+    const files = (await (await Cloud.oracleBucket(configAuth)).listFiles()).filter(file => file.name.endsWith(".deb"));
     const { fileList = [] } = await inquirer.prompt<{fileList: string[]}>({
       type: "list",
       name: "fileList",
       message: "Select files",
       choices: files.map(file => ({
         checked: true,
-        name: file.path,
-        value: file.path
+        name: file.name,
+        value: file.name
       }))
     });
     return {
