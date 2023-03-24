@@ -4,32 +4,27 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ESNext",
-    "declaration": false,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
     "strict": false,
     "noUnusedLocals": true,
-    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "allowSyntheticDefaultImports": true,
     "skipLibCheck": true,
     "allowJs": true,
+    "composite": true,
     "lib": [
-      "ES6"
+      "ESNext"
     ]
   },
-  "include": [
-    "src/**/*"
-  ],
   "exclude": [
-    "src/**/*.test.ts",
-    "node_modules",
-    "./node_modules",
-    "./node_modules/*",
-    "./node_modules/@types/*",
+    "**/*.test.ts",
+    "node_modules/"
   ],
   "ts-node": {
+    "files": true,
     "esm": true,
-    "experimentalResolver": true,
-    "experimentalSpecifierResolution": "node"
+    "transpileOnly": true
   }
 }

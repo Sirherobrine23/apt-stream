@@ -1,4 +1,5 @@
-/apt*.y[a]ml
+/apt*.yml
+/apt*.yaml
 /apt*.json
 .repoTest/
 thunder-tests
