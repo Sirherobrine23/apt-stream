@@ -211,7 +211,17 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
           clientToken: data.clientToken,
           gIds: (data.gIds ?? []).map(k => k?.trim()).filter(Boolean),
         });
-      } else if (data.type === "docker") console.info("Ignore the docker image (%O), current not support Docker image, require more utils", data.image);
+      } else if (data.type === "docker") {
+        if (!data.image) throw new TypeError("misconfigured docker image, check your docker.image");
+        newConfigObject.repository[nName].source.push({
+          type: "docker",
+          componentName: data.componentName ?? null,
+          id,
+          image: data.image,
+          auth: data.auth ? {username: data.auth!.username, password: data.auth!.password} : undefined,
+          tags: data.tags instanceof Array ? data.tags.map(String) : [],
+        });
+      }
     }
   }
 

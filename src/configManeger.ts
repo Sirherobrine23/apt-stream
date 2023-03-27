@@ -1,7 +1,8 @@
+import * as dockerRegistry from "@sirherobrine23/docker-registry";
 import { config, aptStreamConfig, save, repositorySource } from "./config.js";
 import inquirer, { QuestionCollection } from "inquirer";
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
-import { loadRepository } from "./packageManege.js";
+import { syncRepository } from "./packageManege.js";
 import { connect } from "./database.js";
 import { Github } from "@sirherobrine23/http";
 import ora from "ora";
@@ -44,8 +45,7 @@ async function createSource(): Promise<repositorySource> {
       },
       {
         value: "docker",
-        name: "Docker or Open Container image (OCI) image",
-        disabled: true
+        name: "Docker or Open Container image (OCI) image"
       }
     ]
   });
@@ -238,7 +238,64 @@ async function createSource(): Promise<repositorySource> {
       })
     };
   } else if (target === "docker") {
-    console.log("Docker disabled, check in the future apt-stream support this");
+    const basicConfig = await inquirer.prompt<{authConfirm: boolean, imageURI: string}>([
+      {
+        name: "imageURI",
+        type: "input",
+        message: "Image URI/URL:",
+        validate(input) {
+          try {
+            new dockerRegistry.parseImage(input);
+            return true;
+          } catch (err) {
+            return String(err?.message || err);
+          }
+        },
+      },
+      {
+        name: "authConfirm",
+        type: "confirm",
+        message: "This registry or image required authentication?"
+      }
+    ]);
+    let auth: dockerRegistry.userAuth;
+    if (basicConfig.authConfirm) {
+      const authPrompts = await inquirer.prompt([
+        {
+          name: "user",
+          type: "input",
+          message: "Username:",
+          validate(input: string) {
+            if (input.trim().length > 1) return true;
+            return "Invalid username";
+          }
+        },
+        {
+          name: "pass",
+          type: "password",
+          mask: "*",
+          message: "Password or Token:"
+        },
+      ]);
+      auth = {
+        username: authPrompts.user,
+        password: authPrompts.pass
+      };
+    }
+
+    const registry = new dockerRegistry.v2(basicConfig.imageURI, auth);
+    const tags = await simpleQuestion<string[]>({
+      type: "checkbox",
+      message: "Select tags or don't select any to go to the last 6 tags at sync time",
+      choices: (await registry.getTags())
+    });
+
+    return {
+      type: "docker",
+      image: basicConfig.imageURI,
+      auth,
+      tags
+    };
   }
 
   console.log("Try again");
@@ -319,7 +376,10 @@ export default async function main(configPath: string, configOld?: aptStreamConf
       console.log("Saving...");
       await save(configPath, localConfig);
       console.log("Now loading all packages");
-      return loadRepository(await connect(localConfig), localConfig);
+      const sync = new syncRepository();
+      sync.on("error", console.error);
+      sync.on("addPackage", data => console.log("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName));
+      return sync.sync(await connect(localConfig), localConfig);
     }
     return main(configPath, configOld);
   }
