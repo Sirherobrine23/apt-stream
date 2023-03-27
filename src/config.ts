@@ -1,5 +1,6 @@
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { extendsFS } from "@sirherobrine23/extends";
+import { userAuth } from "@sirherobrine23/docker-registry";
 import fs from "node:fs/promises";
 import yaml from "yaml";
 import path from "node:path";
@@ -56,14 +57,10 @@ export type repositorySource = {
   path?: string[],
   authConfig: oracleBucket.oracleOptions
 }|{
-  /**
-   * get files from Docker/OCI images
-   *
-   * @deprecated cannot load images current version, check latest APIs to get support
-   */
   type: "docker",
   image: string,
-  auth?: any,
+  auth?: userAuth,
+  tags?: string[]
 })
 
 export type aptStreamConfig = {
