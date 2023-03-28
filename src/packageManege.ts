@@ -19,6 +19,7 @@ export async function fileRestore(packageDb: packageData, repoConfig: aptStreamC
     return coreHttp.streamRequest(url, {headers: header, query});
   } else if (source.type === "github") {
     const { token } = source, { url } = packageDb.fileRestore;
+
     return coreHttp.streamRequest(url, {headers: token ? {"Authorization": "token "+token} : {}});
   } else if (source.type === "oracle_bucket") {
     const { authConfig } = source, { fileRestore: { path } } = packageDb;
@@ -114,7 +115,7 @@ export class syncRepository extends EventEmitter {
             this.emit("error", err);
             continue;
           }
-          
+
           await userAuth.setup().then(async () => {
             for (const tag of tags) {
               const manifestManeger = new dockerUtils.Manifest(await registry.getManifets(tag, userAuth), registry);

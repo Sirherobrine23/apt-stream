@@ -2,6 +2,7 @@ import * as Debian from "@sirherobrine23/debian";
 import { packageManeger, packageData } from "./database.js";
 import { aptStreamConfig } from "./config.js";
 import { extendsCrypto } from "@sirherobrine23/extends";
+import { fileRestore } from "./packageManege.js"
 import express from "express";
 import stream from "node:stream";
 import openpgp from "openpgp";
@@ -116,6 +117,7 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
           Filename: path.resolve("/", pathRoot ?? "", "pool", packageComponent ?? "main", `${control.Package}_${control.Architecture}_${control.Version}.deb`),
         })));
       }
+      __stream.push(null);
       return extendsCrypto.createHashAsync(comp ? comp : __stream);
     });
     return Object.assign(comp ? comp : __stream, __load);
@@ -147,6 +149,14 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
     return createPackage(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../../.."), req.path.endsWith(".gzip") ? "gzip" : req.path.endsWith(".xz") ? "lzma" : undefined).pipe(res.writeHead(200, {
     }));
+  });
+
+  app.get("/pool/:componentName/(:package)_(:arch)_(:version).deb", async (req, res, next) => {
+    const { componentName, package: packageName, arch, version: packageVersion } = req.params;
+    const packageID = (await packageManeger.search({packageComponent: componentName, packageArch: arch})).find(({packageControl: { Package, Version }}) => packageName === Package && Version === packageVersion);
+    if (!packageID) return res.status(404).json({error: "Package not exist"});
+    console.log(packageID);
+    return fileRestore(packageID, config).then(str => str.pipe(res.writeHead(200, {}))).catch(next);
   });
 
   return app;
