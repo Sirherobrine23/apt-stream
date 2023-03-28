@@ -31,7 +31,7 @@ export async function fileRestore(packageDb: packageData, repoConfig: aptStreamC
   } else if (source.type === "docker") {
     const { image, auth } = source, { ref, path: debPath } = packageDb.fileRestore;
     const registry = new dockerRegistry(image, auth);
-    return new Promise<stream.Readable>((done, reject) => registry.extractLayer(ref).then(tar => tar.on("error", reject).on("File", entry => entry.path === debPath ? done(entry as any) : null)));
+    return new Promise<stream.Readable>((done, reject) => registry.extractLayer(ref).then(tar => tar.on("error", reject).on("File", entry => entry.path === debPath ? done(entry.stream) : null)));
   }
   throw new Error("Check package type");
 }
@@ -54,29 +54,33 @@ export class syncRepository extends EventEmitter {
       if (!source) continue;
       for (const target of source) {
         const { id } = target;
-        try {
-          if (target.type === "http") {
-            const { control } = await Debian.parsePackage(await coreHttp.streamRequest(target.url, {headers: target.auth?.header, query: target.auth?.query}));
-            this.emit("addPackage", await packageManeger.addPackage(repo, target.componentName || "main", id, {}, control));
-          } else if (target.type === "oracle_bucket") {
-            const { authConfig, path = [] } = target;
-            const bucket = await oracleBucket.oracleBucket(authConfig);
+        if (target.type === "http") {
+          await coreHttp.streamRequest(target.url, {headers: target.auth?.header, query: target.auth?.query})
+          .then(str => Debian.parsePackage(str)
+          .then(({control}) => packageManeger.addPackage(repo, target.componentName || "main", id, {}, control)))
+          .then(src => this.emit("addPackage", src)).catch(err => this.emit("error", err));
+        } else if (target.type === "oracle_bucket") {
+          const { authConfig, path = [] } = target;
+          await oracleBucket.oracleBucket(authConfig).then(async bucket => {
             if (path.length === 0) path.push(...((await bucket.listFiles()).filter(k => k.name.endsWith(".deb")).map(({name}) => name)));
-            await Promise.all(path.map(async file => {
+            for (const file of path) {
               const { control } = await Debian.parsePackage(await bucket.getFileStream(file));
               this.emit("addPackage", await packageManeger.addPackage(repo, target.componentName || "main", id, {}, control));
-            }));
-          } else if (target.type === "google_driver") {
-            const { clientId, clientSecret, clientToken, gIds = [] } = target;
-            const gdrive = await googleDriver.GoogleDriver({clientID: clientId, clientSecret, token: clientToken});
+            }
+          }).catch(err => this.emit("error", err));
+        } else if (target.type === "google_driver") {
+          const { clientId, clientSecret, clientToken, gIds = [] } = target;
+          if (!clientToken) {
+            this.emit("error", new Error(`Cannot get files from ${id}, Google driver token is blank`));
+            continue;
+          }
+          await googleDriver.GoogleDriver({clientID: clientId, clientSecret, token: clientToken}).then(async gdrive => {
             if (gIds.length === 0) gIds.push(...((await gdrive.listFiles()).filter(rel => rel.name.endsWith(".deb")).map(({id}) => id)));
-            await Promise.all(gIds.map(async file => {
-              const { control } = await Debian.parsePackage(await gdrive.getFileStream(file));
-              this.emit("addPackage", await packageManeger.addPackage(repo, target.componentName || "main", id, {}, control));
-            }));
-          } else if (target.type === "github") {
-            const { owner, repository, token } = target;
-            const gh = await Github.GithubManeger(owner, repository, token);
+            for (const file of gIds) await Debian.parsePackage(await gdrive.getFileStream(file)).then(({control}) => packageManeger.addPackage(repo, target.componentName || "main", id, {}, control)).then(src => this.emit("addPackage", src));
+          }).catch(err => this.emit("error", err));
+        } else if (target.type === "github") {
+          const { owner, repository, token } = target;
+          await Github.GithubManeger(owner, repository, token).then(async gh => {
             if (target.subType === "branch") {
               const { branch = (await gh.branchList()).at(0)?.name ?? "main" } = target;
               for (const { path: filePath } of (await gh.trees(branch)).tree.filter(file => file.type === "tree" ? false : file["path"])) {
@@ -94,27 +98,33 @@ export class syncRepository extends EventEmitter {
                 }
               }
             }
-          } else if (target.type === "docker") {
-            const { image, auth, tags = [] } = target;
-            const registry = new dockerRegistry(image, auth);
+          }).catch(err => this.emit("error", err));
+        } else if (target.type === "docker") {
+          const { image, auth, tags = [] } = target;
+          const registry = new dockerRegistry(image, auth);
+          const userAuth = new dockerAuth(registry.image, "pull", auth);
+          try {
             if (tags.length === 0) {
               const { sha256, tag } = registry.image;
               if (sha256) tags.push(sha256);
               else if (tag) tags.push(tag);
               else tags.push(...((await registry.getTags()).reverse().slice(0, 6)));
             }
-            const userAuth = new dockerAuth(registry.image, "pull", auth);
-            await userAuth.setup();
+          } catch (err) {
+            this.emit("error", err);
+            continue;
+          }
+          
+          await userAuth.setup().then(async () => {
             for (const tag of tags) {
               const manifestManeger = new dockerUtils.Manifest(await registry.getManifets(tag, userAuth), registry);
               const addPckage = async () => {
                 for (const layer of manifestManeger.getLayers()) {
-                  const blob = await registry.extractLayer(layer.digest, layer.mediaType, userAuth);
+                  const blob = await registry.extractLayer(layer.digest, userAuth);
                   blob.on("File", async entry => {
                     if (!(entry.path.endsWith(".deb"))) return null;
-                    console.log(entry.path);
                     try {
-                      const { control } = await Debian.parsePackage(entry as any);
+                      const { control } = await Debian.parsePackage(entry.stream as any);
                       this.emit("addPackage", await packageManeger.addPackage(repo, target.componentName || "main", id, {
                         ref: layer.digest,
                         path: entry.path,
@@ -131,9 +141,7 @@ export class syncRepository extends EventEmitter {
                 }
               } else await addPckage();
             }
-          }
-        } catch (err) {
-          this.emit("error", err);
+          }).then(err => this.emit("error", err));
         }
       }
     }
