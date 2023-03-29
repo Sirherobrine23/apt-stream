@@ -155,6 +155,11 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
     repository: {},
   };
 
+  if (newConfigObject.gpgSign) {
+    if (!newConfigObject.gpgSign.private.content && newConfigObject.gpgSign.private.path) newConfigObject.gpgSign.private.content = await fs.readFile(path.resolve(process.cwd(), newConfigObject.gpgSign.private.path), "utf8");
+    if (!newConfigObject.gpgSign.public.content && newConfigObject.gpgSign.public.path) newConfigObject.gpgSign.public.content = await fs.readFile(path.resolve(process.cwd(), newConfigObject.gpgSign.public.path), "utf8");
+  }
+
   for (const repoName of returnUniq((Object.keys(optionsOverload?.repository ?? {}).concat(...(Object.keys(tmpConfig.repository ?? {})))))) {
     for (const data of ((optionsOverload?.repository?.[repoName]?.source ?? []).concat(tmpConfig?.repository?.[repoName]?.source)).filter(Boolean)) {
       if (!data) continue;
@@ -228,10 +233,30 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
   return newConfigObject;
 }
 
+export async function convertString(config: aptStreamConfig, target: "yaml"|"yml"|"json"|"json64"|"yaml64"|"yml64") {
+  config = await prettyConfig(config);
+  let encode64 = target.endsWith("64");
+  let configString: string;
+  if (target === "json"||target === "json64") configString = JSON.stringify(config, null, encode64 ? 0 : 2);
+  else configString = yaml.stringify(config);
+  if (encode64) return Buffer.from(configString, "utf8").toString("base64");
+  return configString;
+}
+
 export async function save(configPath: string, config: aptStreamConfig) {
+  config = await prettyConfig(config);
+  if (config.gpgSign) {
+    if (config.gpgSign.private.path) {
+      await fs.writeFile(path.resolve(process.cwd(), config.gpgSign.private.path), config.gpgSign.private.content);
+      config.gpgSign.private.content = null;
+    }
+    if (config.gpgSign.public.path) {
+      await fs.writeFile(path.resolve(process.cwd(), config.gpgSign.public.path), config.gpgSign.public.content);
+      config.gpgSign.public.content = null;
+    }
+  }
   let ext = ".json";
   if (path.extname(configPath) === ".yaml" || path.extname(configPath) === ".yml") ext = ".yaml";
-  config = await prettyConfig(config);
   return fs.writeFile(configPath, ext === ".json" ? JSON.stringify(config, null, 2) : yaml.stringify(config));
 }
 

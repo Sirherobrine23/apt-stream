@@ -9,6 +9,11 @@ jobs:
   publishpackage:
     runs-on: ubuntu-latest
     name: Publish
+    permissions:
+      packages: write
+      contents: write
+    env:
+      PACKAGE_VERSION: ${{ github.ref }}
     steps:
     - uses: actions/checkout@v3
       name: Code checkout
@@ -17,39 +22,6 @@ jobs:
         ref: main
         fetch-depth: 2
         submodules: true
-
-    # Install basic tools
-    - uses: actions/setup-node@v3
-      name: Setup node.js
-      with:
-        node-version: 18.x
-        registry-url: https://registry.npmjs.org/
-
-    - run: sudo npm install -g ts-node typescript
-      name: Install typescript and ts-node
-
-    - name: Edit version
-      shell: node {0}
-      run: |
-        const fs = require("fs");
-        const path = require("path");
-        const packagePath = path.join(process.cwd(), "package.json");
-        const package = JSON.parse(fs.readFileSync(packagePath, "utf8"));
-        package.version = "${{ github.ref }}";
-        package.version = package.version.replace(/[A-Za-z_\/]+/, "");
-        fs.writeFileSync(packagePath, JSON.stringify(package, null, 2));
-
-    # Add version to environment variables
-    - name: Add version to environment variables
-      run: |
-        cat package.json | jq -r '.version' > /tmp/version.txt
-        echo "PACKAGE_VERSION=$(cat /tmp/version.txt)" >> $GITHUB_ENV
-
-    # Install depencides and build
-    - run: npm ci
-
-    # Build
-    - run: npm run build
 
     - name: Setup QEMU to Docker
       uses: docker/setup-qemu-action@v2
@@ -64,12 +36,32 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
+    # Install basic tools
+    - uses: actions/setup-node@v3
+      name: Setup node.js
+      with:
+        node-version: 18.x
+        registry-url: https://registry.npmjs.org/
+
+    - name: Edit version and install depencies
+      run: |
+        sudo npm i -g semver
+        VERSION="$(semver -c ${{ github.ref_name }})"
+        echo "PACKAGE_VERSION=$VERSION" >> $GITHUB_ENV
+        jq --arg ver $VERSION '.version = $ver' package.json
+
+        # Install depencides and build
+        npm install --no-save
+
+    # Publish npm
+    - run: npm publish --access public --tag ${{ github.event.release.prerelease && 'next' || 'latest' }}
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
     - name: Build image
       uses: docker/build-push-action@v4
       with:
-        cache-from: ${{ github.event_name == 'push' && 'type=gha,scope=${{ github.ref }}_${{ github.repo }}' || '' }}
         platforms: "linux/amd64,linux/arm64"
-        cache-to: type=gha,scope=${{ github.ref }}_${{ github.repo }}
         context: ./
         push: true
         tags: |

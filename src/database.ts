@@ -24,7 +24,7 @@ export class packageManeger {
     return this.options.getPackages.call(this);
   }
 
-  search = async (search: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): ReturnType<typeof this.options.findPackages> => {
+  async search(search: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): Promise<packageData[]> {
     if (typeof this.options.findPackages !== "function") return (await this.getPackages()).filter(data => ((!search.packageName) || (search.packageName === data.packageControl.Package)) && ((!search.packageArch) || (data.packageControl.Architecture === search.packageArch)) && ((!search.packageComponent) || (data.packageComponent === search.packageComponent)) && ((!search.packageDist) || (data.packageDistribuition === search.packageDist)));
     return this.options.findPackages.call(this, search);
   }

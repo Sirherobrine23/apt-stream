@@ -6,6 +6,7 @@ thunder-tests
 *.deb
 *.key
 *.pem
+*.gpg
 
 # Ingore node folders
 node_modules/
