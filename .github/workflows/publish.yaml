@@ -48,7 +48,8 @@ jobs:
         sudo npm i -g semver
         VERSION="$(semver -c ${{ github.ref_name }})"
         echo "PACKAGE_VERSION=$VERSION" >> $GITHUB_ENV
-        jq --arg ver $VERSION '.version = $ver' package.json
+        jq --arg ver $VERSION '.version = $ver' package.json > package2.json
+        mv -fv package2.json package.json
 
         # Install depencides and build
         npm install --no-save

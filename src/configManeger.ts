@@ -463,10 +463,12 @@ export default async function main(configPath: string, configOld?: aptStreamConf
       console.log("Saving...");
       await save(configPath, localConfig);
       console.log("Now loading all packages");
-      const sync = new syncRepository();
-      sync.on("error", console.error);
+      const db = await connect(localConfig);
+      const sync = new syncRepository(db, localConfig);
+      sync.on("error", err => console.error(err?.message || err));
       sync.on("addPackage", data => console.log("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName));
-      return sync.sync(await connect(localConfig), localConfig);
+      await sync.wait();
+      await db.close();
     }
     return main(configPath, configOld);
   }

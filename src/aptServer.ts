@@ -17,6 +17,25 @@ function returnUniq(arg1: string[]) {
 export default function main(packageManeger: packageManeger, config: aptStreamConfig) {
   const { gpgSign } = config;
   const app = express.Router();
+  async function createPackage(packagesArray: packageData[], pathRoot: string, compress?: "gzip"|"lzma", callback: (stream: stream.Readable) => void = () => {}) {
+    const __stream = new stream.Readable({read() {}});
+    const comp = compress ? __stream.pipe(compress === "lzma" ? lzma.Compressor() : zlib.createGzip()) : null;
+    callback(comp ? comp : __stream);
+    return Promise.resolve().then(async () => {
+      for (let packIndex = 0; packIndex < packagesArray.length; packIndex++) {
+        if (packIndex !== 0) __stream.push(Buffer.from("\n\n"));
+        const { packageControl: control, packageComponent } = packagesArray[packIndex];
+        const hash = control.SHA1 || control.SHA256 || control.SHA512 || control.MD5sum;
+        if (!hash) continue;
+        __stream.push(Debian.createControl(Object.assign({
+          ...control,
+          Filename: path.resolve("/", pathRoot ?? "", "pool", packageComponent ?? "main", `${hash}.deb`).slice(1),
+        })), "utf8");
+      }
+      __stream.push(null);
+      return extendsCrypto.createHashAsync(comp ? comp : __stream);
+    });
+  }
 
   async function createRelease(packagesArr: packageData[], aptRoot: string) {
     const { aptConfig } = config.repository[packagesArr.at(-1).packageDistribuition] ?? {};
@@ -105,50 +124,32 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     }, [] as string[]).join("\n");
   }
 
-  function createPackage(packagesArray: packageData[], pathRoot: string, compress?: "gzip"|"lzma") {
-    const __stream = new stream.Readable({read() {}});
-    const comp = compress ? __stream.pipe(compress === "lzma" ? lzma.Compressor() : zlib.createGzip()) : null;
-    const __load = Promise.resolve().then(async () => {
-      for (let packIndex = 0; packIndex < packagesArray.length; packIndex++) {
-        if (packIndex !== 0) __stream.push(Buffer.from("\n\n"));
-        const { packageControl: control, packageComponent } = packagesArray[packIndex];
-        __stream.push(Debian.createControl(Object.assign({
-          ...control,
-          Filename: path.resolve("/", pathRoot ?? "", "pool", packageComponent ?? "main", `${control.Package}_${control.Architecture}_${control.Version}.deb`),
-        })));
-      }
-      __stream.push(null);
-      return extendsCrypto.createHashAsync(comp ? comp : __stream);
-    });
-    return Object.assign(comp ? comp : __stream, __load);
-  }
-
-  app.get("/dists/:distName/((InRelease|Release(.gpg)?))", async (req, res) => {
+  app.get("/dists(|/.)/:distName/((InRelease|Release(.gpg)?))", async (req, res) => {
     const packages = await packageManeger.search({packageDist: req.params["distName"]});
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
-    const Release = await createRelease(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../.."));
-    if (req.path.endsWith("InRelease")||req.path.endsWith("Release.gpg")) {
+    let Release = await createRelease(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../.."));
+    const lowerPath = req.path.toLowerCase();
+    if (lowerPath.endsWith("inrelease")||lowerPath.endsWith("release.gpg")) {
       if (!gpgSign) return res.status(404).json({ error: "Repository not signed" });
       const privateKey = gpgSign.authPassword ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: gpgSign.private.content }), passphrase: gpgSign.authPassword}) : await openpgp.readPrivateKey({ armoredKey: gpgSign.private.content });
-      res.status(200).setHeader("Content-Type", "text/plain");
-      if (req.path.endsWith(".gpg")) return res.send(await openpgp.sign({
-        signingKeys: privateKey,
-        format: "armored",
-        message: await openpgp.createMessage({
-          text: Release
-        })
-      }));
-      return res.send(await openpgp.sign({signingKeys: privateKey, format: "armored", message: await openpgp.createCleartextMessage({text: Release})}));
+      if (req.path.endsWith(".gpg")) {
+        Release = Buffer.from(await openpgp.sign({
+          signingKeys: privateKey,
+          format: "armored",
+          message: await openpgp.createMessage({
+            text: Release
+          })
+        }) as any).toString("utf8");
+      } else Release = await openpgp.sign({signingKeys: privateKey, format: "armored", message: await openpgp.createCleartextMessage({text: Release})})
     }
-    return res.status(200).setHeader("Content-Type", "text/plain").send(Release);
+    return res.status(200).setHeader("Content-Type", "text/plain").setHeader("Content-Length", String(Buffer.byteLength(Release))).send(Release);
   });
 
-  app.get("/dists/:distName/:componentName/binary-:Arch/Packages(.(gz|xz))?", async (req, res) => {
+  app.get("/dists(|/.)/:distName/:componentName/binary-:Arch/Packages(.(gz|xz))?", async (req, res) => {
     const { distName, componentName, Arch } = req.params;
     const packages = await packageManeger.search({packageDist: distName, packageComponent: componentName, packageArch: Arch});
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
-    return createPackage(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../../.."), req.path.endsWith(".gzip") ? "gzip" : req.path.endsWith(".xz") ? "lzma" : undefined).pipe(res.writeHead(200, {
-    }));
+    return createPackage(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../../.."), req.path.endsWith(".gzip") ? "gzip" : req.path.endsWith(".xz") ? "lzma" : undefined, (str) => str.pipe(res.writeHead(200, {})));
   });
   app.get("/pool", async ({res}) => packageManeger.search({}).then(data => res.json(data)));
   app.get("/pool/:componentName", async (req, res) => {
@@ -156,12 +157,11 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     if (packagesList.length === 0) return res.status(404).json({error: "Package component not exists"});
     return res.json(packagesList.map(({packageControl, packageDistribuition}) =>  ({control: packageControl, dist: packageDistribuition})));
   });
-  app.get("/pool/:componentName/(:package)_(:arch)_(:version).deb", async (req, res, next) => {
-    const { componentName, package: packageName, arch, version: packageVersion } = req.params;
-    const packageID = (await packageManeger.search({packageComponent: componentName, packageArch: arch})).find(({packageControl: { Package, Version }}) => packageName === Package && Version === packageVersion);
+  app.get("/pool/:componentName/(:hash)(|.deb)", async (req, res, next) => {
+    const packageID = (await packageManeger.search({packageComponent: req.params.componentName})).find(({packageControl}) => ([String(packageControl.SHA1), String(packageControl.SHA256), String(packageControl.SHA512), String(packageControl.MD5sum)]).includes(req.params.hash));
     if (!packageID) return res.status(404).json({error: "Package not exist"});
-    console.log(packageID);
-    return fileRestore(packageID, config).then(str => str.pipe(res.writeHead(200, {}))).catch(next);
+    if (req.path.endsWith(".deb")) return fileRestore(packageID, config).then(str => str.pipe(res.writeHead(200, {}))).catch(next);
+    return res.json(packageID.packageControl);
   });
   return app;
 }

@@ -48,10 +48,12 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
   const db = await connect(appConfig);
   const app = express();
   app.get("/", ({res}) => res.json({cluster: cluster.isWorker, id: cluster.worker?.id}));
-  app.get("/public(_key|)(|.gpg)", async ({res}) => {
+  app.get("/public(_key|)(|.gpg|.asc)", async (req, res) => {
     if (!appConfig.gpgSign) return res.status(404).json({error: "Gpg not configured"});
+    // gpg --dearmor
+    if (req.path.endsWith(".asc")) return res.send(Buffer.from((await openpgp.unarmor(appConfig.gpgSign.public.content)).data as any));
     const pubKey = (await openpgp.readKey({ armoredKey: appConfig.gpgSign.public.content })).armor();
-    return res.setHeader("Content-Type", "application/pgp-keys").send(pubKey);
+    return res.setHeader("Content-Type", "text/plain").send(pubKey);
   });
   const aptRoute = apt(db, appConfig);
   app.use(aptRoute);

@@ -2,6 +2,7 @@ import * as Debian from "@sirherobrine23/debian";
 import { aptStreamConfig } from "./config.js";
 import mongoDB from "mongodb";
 import nano from "nano";
+import { format } from "node:util";
 
 export interface packageData {
   packageComponent: string;
@@ -12,32 +13,66 @@ export interface packageData {
 }
 
 export interface packageManegerConfig {
-  getPackages(this: packageManeger): Promise<packageData[]>;
+  getPackages?(this: packageManeger): Promise<packageData[]>;
   registryPackage?(this: packageManeger, ...args: Parameters<typeof packageManeger["prototype"]["addPackage"]>): ReturnType<typeof packageManeger["prototype"]["addPackage"]>;
-  findPackages?(this: packageManeger, search: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): Promise<packageData[]>;
+  findPackages?(this: packageManeger, search?: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): Promise<packageData[]>;
+  deleteSource?(this: packageManeger, id: string): Promise<void>;
+  close?(): Promise<void>;
 }
 
 export class packageManeger {
-  constructor(private options: packageManegerConfig) {}
+  #options?: packageManegerConfig
+  constructor(options?: packageManegerConfig) {this.#options = options || {}}
+  #internalPackage: packageData[] = [];
   getPackages = async (): Promise<packageData[]> => {
-    if (typeof this.options.getPackages !== "function") throw new Error("Get packages disabled by Backend");
-    return this.options.getPackages.call(this);
+    if (typeof this.#options.getPackages !== "function") return this.#internalPackage.filter(data => !!data);
+    return this.#options.getPackages.call(this);
   }
 
-  async search(search: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): Promise<packageData[]> {
-    if (typeof this.options.findPackages !== "function") return (await this.getPackages()).filter(data => ((!search.packageName) || (search.packageName === data.packageControl.Package)) && ((!search.packageArch) || (data.packageControl.Architecture === search.packageArch)) && ((!search.packageComponent) || (data.packageComponent === search.packageComponent)) && ((!search.packageDist) || (data.packageDistribuition === search.packageDist)));
-    return this.options.findPackages.call(this, search);
+  async search(search?: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): Promise<packageData[]> {
+    search ??= {};
+    if (typeof this.#options.findPackages !== "function") return (await this.getPackages()).filter(data => ((!search.packageName) || (search.packageName === data.packageControl.Package)) && ((!search.packageArch) || (data.packageControl.Architecture === search.packageArch)) && ((!search.packageComponent) || (data.packageComponent === search.packageComponent)) && ((!search.packageDist) || (data.packageDistribuition === search.packageDist)));
+    return this.#options.findPackages.call(this, search);
   }
 
   addPackage = async (distName: string, componentName: string, repoID: string, fileRestore: any, control: Debian.debianControl): Promise<{distName: string, componentName: string, control: Debian.debianControl}> => {
-    if (typeof this.options.registryPackage !== "function") throw new Error("Add package disabled");
     if ((await this.search({
       packageName: control.Package,
       packageComponent: componentName,
       packageArch: control.Architecture,
       packageDist: distName
-    })).find(d => (d.packageControl.Version === control.Version))) throw new Error("Package exists!");
-    return this.options.registryPackage.call(this, distName, componentName, repoID, fileRestore, control);
+    })).find(d => (d.packageControl.Version === control.Version))) throw new Error(format("%s/%s_%s already exists registered!", control.Package, control.Architecture, control.Version));
+    if (typeof this.#options.registryPackage !== "function") this.#internalPackage.push({packageDistribuition: distName, packageComponent: componentName, id: repoID, fileRestore, packageControl: control});
+    else await Promise.resolve().then(() => this.#options.registryPackage.call(this, distName, componentName, repoID, fileRestore, control));
+    return {
+      componentName,
+      distName,
+      control
+    };
+  }
+
+  async deleteRepositorySource(id: string): Promise<void> {
+    if (typeof this.#options?.deleteSource === "function") {
+      await Promise.resolve().then(() => this.#options.deleteSource.call(this, id));
+      return;
+    }
+    for (const packIndex in this.#internalPackage) {
+      if (!this.#internalPackage[packIndex]) continue;
+      if (this.#internalPackage[packIndex].id !== id) continue;
+      delete this.#internalPackage[packIndex];
+    }
+  }
+  async close() {
+    if (typeof this.#options?.close === "function") await Promise.resolve().then(() => this.#options.close());
+  }
+  async Sync(config: aptStreamConfig): Promise<string[]> {
+    const packagesArray = await this.search();
+    const toDelete = packagesArray.filter(data => !(config.repository[data.packageDistribuition] && config.repository[data.packageDistribuition].source.find(rel => rel.id === data.id))).reduce((acc, data) => {
+      if (!acc.includes(data.id)) acc.push(data.id);
+      return acc;
+    }, [] as string[]);
+    for (const sourceID of toDelete) await this.deleteRepositorySource(sourceID);
+    return toDelete;
   }
 }
 
@@ -68,7 +103,10 @@ export async function connect(config: aptStreamConfig) {
           distName,
           control,
         };
-      }
+      },
+      async deleteSource(id) {
+        await collection.findOneAndDelete({id});
+      },
     });
   } else if (database.drive === "couchdb") {
     const nanoClient = nano(database.url);
@@ -94,27 +132,11 @@ export async function connect(config: aptStreamConfig) {
           control
         };
       },
+      async deleteSource(id) {
+        await db.list({include_docs: true}).then(data => data.rows.map(({doc}) => doc)).then(docs => docs.filter((doc) => doc.id === id)).then(data => Promise.all(data.map(async doc => db.destroy(doc._id, doc._rev))));
+      },
     });
   }
 
-  const packagesStorage: packageData[] = [];
-  return new packageManeger({
-    async getPackages() {
-      return Array.from(packagesStorage);
-    },
-    async registryPackage(distName, componentName, repoID, fileRestore, control) {
-      packagesStorage.push({
-        packageDistribuition: distName,
-        packageComponent: componentName,
-        id: repoID,
-        packageControl: control,
-        fileRestore,
-      });
-      return {
-        componentName,
-        distName,
-        control
-      };
-    },
-  });
+  return new packageManeger();
 }
