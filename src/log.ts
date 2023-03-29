@@ -10,7 +10,7 @@ if (cluster.isWorker) {
     depth: null
   };
 
-  console.clear = console.clear ?? function () {console.warn("Not tty")}
+  console.clear = console.clear ?? function () {console.warn("cannot clear tty");}
 
   console.log = function(...args) {
     log("[LOG%s]: %s", id ? ` Cluster ${id}` : "", formatWithOptions(defaultOptions, ...args));

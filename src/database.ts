@@ -13,7 +13,7 @@ export interface packageData {
 
 export interface packageManegerConfig {
   getPackages(this: packageManeger): Promise<packageData[]>;
-  registryPackage?(this: packageManeger, distName: string, componentName: string, repoID: string, fileRestore: any, control: Debian.debianControl): Promise<{distName: string, componentName: string, packageName: string}>;
+  registryPackage?(this: packageManeger, ...args: Parameters<typeof packageManeger["prototype"]["addPackage"]>): ReturnType<typeof packageManeger["prototype"]["addPackage"]>;
   findPackages?(this: packageManeger, search: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): Promise<packageData[]>;
 }
 
@@ -24,13 +24,19 @@ export class packageManeger {
     return this.options.getPackages.call(this);
   }
 
-  search = async (search: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): ReturnType<typeof this.options.findPackages> => {
-    if (typeof this.options.findPackages !== "function") return (await this.getPackages()).filter(data => ((!search.packageName) || (search.packageName !== data.packageControl.Package)) && ((!search.packageArch) || (data.packageControl.Architecture !== search.packageArch)) && ((!search.packageComponent) || (data.packageComponent !== search.packageComponent)) && ((!search.packageDist) || (data.packageDistribuition !== search.packageDist)));
+  async search(search: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): Promise<packageData[]> {
+    if (typeof this.options.findPackages !== "function") return (await this.getPackages()).filter(data => ((!search.packageName) || (search.packageName === data.packageControl.Package)) && ((!search.packageArch) || (data.packageControl.Architecture === search.packageArch)) && ((!search.packageComponent) || (data.packageComponent === search.packageComponent)) && ((!search.packageDist) || (data.packageDistribuition === search.packageDist)));
     return this.options.findPackages.call(this, search);
   }
 
-  addPackage = async (distName: string, componentName: string, repoID, fileRestore, control: Debian.debianControl): ReturnType<typeof this.options.registryPackage> => {
+  addPackage = async (distName: string, componentName: string, repoID: string, fileRestore: any, control: Debian.debianControl): Promise<{distName: string, componentName: string, control: Debian.debianControl}> => {
     if (typeof this.options.registryPackage !== "function") throw new Error("Add package disabled");
+    if ((await this.search({
+      packageName: control.Package,
+      packageComponent: componentName,
+      packageArch: control.Architecture,
+      packageDist: distName
+    })).find(d => (d.packageControl.Version === control.Version))) throw new Error("Package exists!");
     return this.options.registryPackage.call(this, distName, componentName, repoID, fileRestore, control);
   }
 }
@@ -49,12 +55,6 @@ export async function connect(config: aptStreamConfig) {
       },
       async registryPackage(distName, componentName, repoID, fileRestore, control) {
         if (!control) throw new Error("Error mal formado!");
-        if ((await this.search({
-          packageName: control.Package,
-          packageComponent: componentName,
-          packageArch: control.Architecture,
-          packageDist: distName
-        })).find(d => (d.packageControl.Version === control.Version))) throw new Error("Package exists!");
         await collection.insertOne({
           packageComponent: componentName,
           packageDistribuition: distName,
@@ -66,7 +66,7 @@ export async function connect(config: aptStreamConfig) {
         return {
           componentName,
           distName,
-          packageName: control.Package
+          control,
         };
       }
     });
@@ -80,7 +80,6 @@ export async function connect(config: aptStreamConfig) {
         return (await db.list({include_docs: true})).rows.map(data => data.doc);
       },
       async registryPackage(distName, componentName, repoID, fileRestore, control) {
-        if ((await this.search({packageName: control.Package, packageComponent: componentName, packageArch: control.Architecture})).find(d => (d.packageDistribuition === distName) && (d.packageControl.Version === control.Version))) throw new Error("Package exists!");
         await db.insert({
           packageDistribuition: distName,
           packageComponent: componentName,
@@ -92,7 +91,7 @@ export async function connect(config: aptStreamConfig) {
         return {
           componentName,
           distName,
-          packageName: control.Package
+          control
         };
       },
     });
@@ -104,7 +103,6 @@ export async function connect(config: aptStreamConfig) {
       return Array.from(packagesStorage);
     },
     async registryPackage(distName, componentName, repoID, fileRestore, control) {
-      if ((await this.search({packageName: control.Package, packageComponent: componentName, packageArch: control.Architecture})).find(d => (d.packageDistribuition === distName) && (d.packageControl.Version === control.Version))) throw new Error("Package exists!");
       packagesStorage.push({
         packageDistribuition: distName,
         packageComponent: componentName,
@@ -115,7 +113,7 @@ export async function connect(config: aptStreamConfig) {
       return {
         componentName,
         distName,
-        packageName: control.Package
+        control
       };
     },
   });

@@ -9,7 +9,7 @@ RUN npm run build
 # Clean build
 FROM node:lts
 VOLUME [ "/data" ]
-COPY --from=0 /app/ /app
 WORKDIR /app
+COPY --from=0 /app/ ./
 RUN npm link
-ENTRYPOINT "apt-stream server --cache /data/cache --data /data/data"
+ENTRYPOINT [ "apt-stream", "server", "--cache", "/data/cache" ]

@@ -16,12 +16,18 @@ node_modules/
 
 # Docker
 .dockerignore
-.Dockerfile
+*docker-compose.yaml
+*docker-compose.yml
+*Dockerfile*
+*dockerfile*
 
 # Project
-/apt*.y[a]ml
+/apt*.yml
+/apt*.yaml
+/apt*.json
 .repoTest/
 thunder-tests
 *.deb
 *.key
 *.pem
+*.gpg
