@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import "./log.js";
 import { connect } from "./database.js";
-import { config, convertString } from "./config.js";
+import { aptStreamConfig, config, convertString } from "./config.js";
 import packageManeger from "./configManeger.js";
 import express from "express";
 import yargs from "yargs";
@@ -24,14 +24,24 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
     number: true,
     type: "number",
     description: "Enable cluster mode for perfomace",
-    alias: "d"
+    alias: "t"
   }).option("cache", {
     string: true,
     alias: "C",
     type: "string",
     description: "cache files"
+  }).option("db", {
+    string: true,
+    type: "string",
+    alias: "d",
+    description: "database url"
   }), async options => {
-  const appConfig = await config(options.config, {serverConfig: {portListen: options.port, clusterCount: options.cluster, cacheFolder: options.cache}});
+  const partialConfig: Partial<aptStreamConfig> = {serverConfig: {portListen: options.port, clusterCount: options.cluster, cacheFolder: options.cache}};
+  if (options.db) {
+    if (options.db.startsWith("http")) partialConfig.database = {drive: "couchdb", url: options.db};
+    else if (options.db.startsWith("mongodb")) partialConfig.database = {drive: "mongodb", url: options.db};
+  }
+  const appConfig = await config(options.config, partialConfig);
   if ((appConfig.serverConfig?.clusterCount || 0) > 0 && cluster.isPrimary) {
     const ct = () => {
       const c = cluster.fork().on("error", err => console.error(err)).once("online", () => console.log("%s is online", c.id)).once("exit", (code, signal) => {

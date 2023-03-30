@@ -133,12 +133,6 @@ export async function createConfig(configPath: string) {
   if (path.extname(configPath) === ".yaml" || path.extname(configPath) === ".yml") ext = ".yaml";
   const tmpConfig: Partial<aptStreamConfig> = {
     serverConfig: {clusterCount: 0, portListen: 0},
-    database: {
-      drive: "mongodb",
-      url: "mongodb://localhost",
-      databaseName: "apt-stram",
-      collection: "packages"
-    },
     repository: {}
   };
   return fs.writeFile(configPath, ext === ".json" ? JSON.stringify(tmpConfig, null, 2) : yaml.stringify(tmpConfig));

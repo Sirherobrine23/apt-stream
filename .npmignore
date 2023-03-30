@@ -5,6 +5,7 @@
 
 # Typescript
 src/*.ts
+tsconfig.*
 
 # node and npm
 node_modules/
