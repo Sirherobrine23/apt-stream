@@ -438,7 +438,7 @@ export default async function main(configPath: string, configOld?: aptStreamConf
     console.log("Init fist repository config!");
     return createRepository(localConfig).then(d => main(configPath, d));
   }
-  const target = await simpleQuestion<"new"|"gpg"|"edit"|"load"|"exit">({
+  const target = await simpleQuestion<"new"|"gpg"|"edit"|"load"|"syncPkgs"|"exit">({
     type: "list",
     message: "Select action",
     choices: [
@@ -446,6 +446,7 @@ export default async function main(configPath: string, configOld?: aptStreamConf
       {name: "Create new Repository", value: "new"},
       {name: "(Re)generate gpg keys", value: "gpg"},
       {name: "Sync repository", value: "load"},
+      {name: "Sync packages", value: "syncPkgs"},
       {name: "Exit", value: "exit"}
     ]
   });
@@ -459,14 +460,22 @@ export default async function main(configPath: string, configOld?: aptStreamConf
         choices: Object.keys(localConfig.repository)
       });
       configOld = await manegerSource(localConfig, repoName);
+    } else if (target === "syncPkgs") {
+      const load = ora("Synchronizing packages with source repositories...");
+      await save(configPath, localConfig);
+      const db = await connect(localConfig);
+      await db.Sync().then(() => db.close()).then(() => load.succeed("Synchronized successfully!")).catch(err => load.fail(err?.message||String(err)));
     } else if (target === "load") {
       console.log("Saving...");
       await save(configPath, localConfig);
       console.log("Now loading all packages");
       const db = await connect(localConfig);
       const sync = new syncRepository(db, localConfig);
-      sync.on("error", err => console.error(err?.message || err));
       sync.on("addPackage", data => console.log("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName));
+      sync.on("error", err => {
+        if (err?.message) console.log("%s\n%s", err.message, err.stack);
+        else console.error(err);
+      });
       await sync.wait();
       await db.close();
     }

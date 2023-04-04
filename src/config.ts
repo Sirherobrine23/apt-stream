@@ -71,7 +71,9 @@ export type aptStreamConfig = {
     /** Run Server in cluste mode, example 8 */
     clusterCount?: number,
 
-    cacheFolder?: string
+    cacheFolder?: string,
+
+    logLevel?: "DEBUG"|"WARN"|"ERROR"|"SILENCE"
   },
 
   database: {
@@ -132,7 +134,11 @@ export async function createConfig(configPath: string) {
   let ext = ".json";
   if (path.extname(configPath) === ".yaml" || path.extname(configPath) === ".yml") ext = ".yaml";
   const tmpConfig: Partial<aptStreamConfig> = {
-    serverConfig: {clusterCount: 0, portListen: 0},
+    serverConfig: {
+      clusterCount: 0,
+      portListen: 0,
+      logLevel: "SILENCE"
+    },
     repository: {}
   };
   return fs.writeFile(configPath, ext === ".json" ? JSON.stringify(tmpConfig, null, 2) : yaml.stringify(tmpConfig));
@@ -143,6 +149,7 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
     serverConfig: {
       portListen: optionsOverload?.serverConfig?.portListen ?? tmpConfig.serverConfig?.portListen ?? 3000,
       clusterCount: optionsOverload?.serverConfig?.clusterCount ?? tmpConfig.serverConfig?.clusterCount ?? 0,
+      logLevel: optionsOverload?.serverConfig?.logLevel ?? tmpConfig?.serverConfig?.logLevel ?? "SILENCE",
     },
     database: optionsOverload?.database ?? tmpConfig.database,
     gpgSign: (optionsOverload?.gpgSign ?? tmpConfig.gpgSign),

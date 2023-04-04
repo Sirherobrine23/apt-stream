@@ -51,7 +51,7 @@ export class syncRepository extends EventEmitter {
     super({captureRejections: true});
     (async () => {
       console.log("Checking sources is sync");
-      await packageManeger.Sync(config).catch(err => this.emit("error", err));
+      await packageManeger.setConfig(config).Sync().catch(err => this.emit("error", err));
       console.log("Checking sources ok");
       for (const repo of repository || Object.keys(config.repository)) {
         const source = config.repository[repo]?.source;
@@ -61,14 +61,14 @@ export class syncRepository extends EventEmitter {
           if (target.type === "http") {
             await coreHttp.streamRequest(target.url, {headers: target.auth?.header, query: target.auth?.query})
             .then(str => Debian.parsePackage(str)
-            .then(({control}) => packageManeger.addPackage(repo, target.componentName || "main", id, {}, control)))
+            .then((control) => packageManeger.addPackage(repo, target.componentName || "main", id, {}, control)))
             .then(src => this.emit("addPackage", src)).catch(err => this.emit("error", err));
           } else if (target.type === "oracle_bucket") {
             const { authConfig, path = [] } = target;
             await oracleBucket.oracleBucket(authConfig).then(async bucket => {
               if (path.length === 0) path.push(...((await bucket.listFiles()).filter(k => k.name.endsWith(".deb")).map(({name}) => name)));
               for (const file of path) {
-                const { control } = await Debian.parsePackage(await bucket.getFileStream(file));
+                const control = await Debian.parsePackage(await bucket.getFileStream(file));
                 this.emit("addPackage", await packageManeger.addPackage(repo, target.componentName || "main", id, {}, control));
               }
             }).catch(err => this.emit("error", err));
@@ -80,7 +80,7 @@ export class syncRepository extends EventEmitter {
             }
             await googleDriver.GoogleDriver({clientID: clientId, clientSecret, token: clientToken}).then(async gdrive => {
               if (gIds.length === 0) gIds.push(...((await gdrive.listFiles()).filter(rel => rel.name.endsWith(".deb")).map(({id}) => id)));
-              for (const file of gIds) await Debian.parsePackage(await gdrive.getFileStream(file)).then(({control}) => packageManeger.addPackage(repo, target.componentName || "main", id, {}, control)).then(src => this.emit("addPackage", src));
+              for (const file of gIds) await Debian.parsePackage(await gdrive.getFileStream(file)).then((control) => packageManeger.addPackage(repo, target.componentName || "main", id, {}, control)).then(src => this.emit("addPackage", src));
             }).catch(err => this.emit("error", err));
           } else if (target.type === "github") {
             const { owner, repository, token } = target;
@@ -89,7 +89,7 @@ export class syncRepository extends EventEmitter {
                 const { branch = (await gh.branchList()).at(0)?.name ?? "main" } = target;
                 for (const { path: filePath } of (await gh.trees(branch)).tree.filter(file => file.type === "tree" ? false : file.path.endsWith(".deb"))) {
                   const rawURL = new URL(path.join(owner, repository, branch, filePath), "https://raw.githubusercontent.com");
-                  const { control } = await Debian.parsePackage(await coreHttp.streamRequest(rawURL, {headers: token ? {Authorization: `token ${token}`} : {}}));
+                  const control = await Debian.parsePackage(await coreHttp.streamRequest(rawURL, {headers: token ? {Authorization: `token ${token}`} : {}}));
                   this.emit("addPackage", (await packageManeger.addPackage(repo, target.componentName || "main", id, {url: rawURL.toString()}, control)));
                 }
               } else {
@@ -97,7 +97,7 @@ export class syncRepository extends EventEmitter {
                 for (const tagName of tag) {
                   const assets = (await gh.getRelease(tagName)).assets.filter(({name}) => name.endsWith(".deb"));
                   for (const asset of assets) {
-                    const { control } = await Debian.parsePackage(await coreHttp.streamRequest(asset.browser_download_url, {headers: token ? {Authorization: `token ${token}`} : {}}));
+                    const control = await Debian.parsePackage(await coreHttp.streamRequest(asset.browser_download_url, {headers: token ? {Authorization: `token ${token}`} : {}}));
                     this.emit("addPackage", (await packageManeger.addPackage(repo, target.componentName || "main", id, {url: asset.browser_download_url}, control)));
                   }
                 }
@@ -128,7 +128,7 @@ export class syncRepository extends EventEmitter {
                     blob.on("File", async entry => {
                       if (!(entry.path.endsWith(".deb"))) return null;
                       try {
-                        const { control } = await Debian.parsePackage(entry.stream as any);
+                        const control = await Debian.parsePackage(entry.stream as any);
                         this.emit("addPackage", await packageManeger.addPackage(repo, target.componentName || "main", id, {
                           ref: layer.digest,
                           path: entry.path,

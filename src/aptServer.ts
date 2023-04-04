@@ -3,13 +3,18 @@ import { packageManeger, packageData } from "./database.js";
 import { aptStreamConfig } from "./config.js";
 import { extendsCrypto } from "@sirherobrine23/extends";
 import { fileRestore } from "./packageManege.js"
+import expressLayer from "express/lib/router/layer.js";
 import express from "express";
-import stream from "node:stream";
 import openpgp from "openpgp";
+import stream from "node:stream";
 import zlib from "node:zlib";
 import lzma from "lzma-native";
 import path from "node:path/posix";
-
+expressLayer.prototype.handle_request = async function handle_request_promised(...args) {
+  var fn = this.handle;
+  if (fn.length > 3) return args.at(-1)();
+  await Promise.resolve().then(() => fn.call(this, ...args)).catch(args.at(-1));
+}
 function returnUniq(arg1: string[]) {
   return Array.from(new Set(arg1));
 }
@@ -114,6 +119,11 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
         data = data.filter(Boolean);
         if (!data.length) return main;
         main.push(`${keyName}:`);
+        // data.sort((a, b) => {
+        //   if (typeof a === "string") return 0;
+        //   else if (typeof b === "string") return 0;
+        //   return b.size - a.size;
+        // });
         for (const line of data) {
           if (typeof line === "string") {
             main[main.length - 1] += ` ${line}`;
@@ -124,6 +134,8 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     }, [] as string[]).join("\n");
   }
 
+  // Get dists
+  app.get("/dists", async ({res}) => res.json(Array.from(new Set((await packageManeger.search()).map(pkg => pkg.packageDistribuition)))));
   app.get("/dists(|/.)/:distName/((InRelease|Release(.gpg)?))", async (req, res) => {
     const packages = await packageManeger.search({packageDist: req.params["distName"]});
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
@@ -151,16 +163,21 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
     return createPackage(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../../.."), req.path.endsWith(".gzip") ? "gzip" : req.path.endsWith(".xz") ? "lzma" : undefined, (str) => str.pipe(res.writeHead(200, {})));
   });
+  app.get("/dists(|/.)/:distName/:componentName/source/Sources", async (req, res) => res.status(404).json({disabled: true, parm: req.params}));
   app.get("/pool", async ({res}) => packageManeger.search({}).then(data => res.json(data)));
   app.get("/pool/:componentName", async (req, res) => {
     const packagesList = await packageManeger.search({packageComponent: req.params.componentName});
     if (packagesList.length === 0) return res.status(404).json({error: "Package component not exists"});
     return res.json(packagesList.map(({packageControl, packageDistribuition}) =>  ({control: packageControl, dist: packageDistribuition})));
   });
-  app.get("/pool/:componentName/(:hash)(|.deb)", async (req, res, next) => {
+  app.get("/pool/:componentName/(:hash)(|/data.tar|.deb)", async (req, res, next) => {
     const packageID = (await packageManeger.search({packageComponent: req.params.componentName})).find(({packageControl}) => ([String(packageControl.SHA1), String(packageControl.SHA256), String(packageControl.SHA512), String(packageControl.MD5sum)]).includes(req.params.hash));
     if (!packageID) return res.status(404).json({error: "Package not exist"});
-    if (req.path.endsWith(".deb")) return fileRestore(packageID, config).then(str => str.pipe(res.writeHead(200, {}))).catch(next);
+    if (req.path.endsWith("/data.tar")||req.path.endsWith(".deb")) {
+      const str = await fileRestore(packageID, config);
+      if (req.path.endsWith(".deb")) return str.pipe(res.writeHead(200, {}));
+      return (await Debian.getPackageData(str)).pipe(res.writeHead(200, {}));
+    }
     return res.json(packageID.packageControl);
   });
   return app;

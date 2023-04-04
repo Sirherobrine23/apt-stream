@@ -35,13 +35,32 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
     type: "string",
     alias: "d",
     description: "database url"
+  }).option("log_level", {
+    string: true,
+    type: "string",
+    alias: ["log-level"],
+    choices: [
+      "DEBUG",
+      "WARN",
+      "ERROR",
+      "SILENCE"
+    ]
+  }).option("debug", {
+    boolean: true,
+    type: "boolean"
   }), async options => {
-  const partialConfig: Partial<aptStreamConfig> = {serverConfig: {portListen: options.port, clusterCount: options.cluster, cacheFolder: options.cache}};
+  const partialConfig: Partial<aptStreamConfig> = {serverConfig: {
+    portListen: options.port,
+    clusterCount: options.cluster,
+    logLevel: (options.debug ? "DEBUG" : options.log_level as any),
+    cacheFolder: options.cache,
+  }};
   if (options.db) {
     if (options.db.startsWith("http")) partialConfig.database = {drive: "couchdb", url: options.db};
     else if (options.db.startsWith("mongodb")) partialConfig.database = {drive: "mongodb", url: options.db};
   }
   const appConfig = await config(options.config, partialConfig);
+  if (partialConfig?.serverConfig?.logLevel === "DEBUG") console.warn("Debug enebled");
   if ((appConfig.serverConfig?.clusterCount || 0) > 0 && cluster.isPrimary) {
     const ct = () => {
       const c = cluster.fork().on("error", err => console.error(err)).once("online", () => console.log("%s is online", c.id)).once("exit", (code, signal) => {
@@ -57,6 +76,16 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
   }
   const db = await connect(appConfig);
   const app = express();
+  const logLevel = appConfig?.serverConfig?.logLevel ?? "SILENCE";
+  app.use((req, res, next) => {
+    res.json = (body) => res.setHeader("Content-Type", "application/json").send(JSON.stringify(body, null, 2));
+    if (logLevel === "DEBUG") {
+      const body = [req.method, req.ip, req.path];
+      console.log("[%s %s] %s", ...body);
+      res.once("close", () => console.log("[Close %s %s] %s", ...body));
+    }
+    return next();
+  });
   app.get("/", ({res}) => res.json({cluster: cluster.isWorker, id: cluster.worker?.id}));
   app.get("/public(_key|)(|.gpg|.asc)", async (req, res) => {
     if (!appConfig.gpgSign) return res.status(404).json({error: "Gpg not configured"});
@@ -67,6 +96,9 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
   });
   const aptRoute = apt(db, appConfig);
   app.use(aptRoute);
+  app.use("/apt", aptRoute);
+  app.all("*", ({res}) => res.status(404).json({message: "Page not exists"}));
+  app.use((err, _req, res, _next) => res.status(500).json({error: err?.message || String(err)}));
   app.listen(appConfig.serverConfig?.portListen ?? 0, function () {
     const address = this.address();
     console.log("Port Listen on %O", typeof address === "object" ? address.port : address);

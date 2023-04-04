@@ -17,12 +17,17 @@ export interface packageManegerConfig {
   registryPackage?(this: packageManeger, ...args: Parameters<typeof packageManeger["prototype"]["addPackage"]>): ReturnType<typeof packageManeger["prototype"]["addPackage"]>;
   findPackages?(this: packageManeger, search?: {packageName?: string, packageArch?: string, packageComponent?: string, packageDist?: string}): Promise<packageData[]>;
   deleteSource?(this: packageManeger, id: string): Promise<void>;
-  close?(): Promise<void>;
+  close?(): void|Promise<void>;
 }
 
 export class packageManeger {
-  #options?: packageManegerConfig
   constructor(options?: packageManegerConfig) {this.#options = options || {}}
+  #options?: packageManegerConfig;
+  #repoConfig: aptStreamConfig;
+  public setConfig(config: aptStreamConfig) {
+    this.#repoConfig = config;
+    return this;
+  }
   #internalPackage: packageData[] = [];
   getPackages = async (): Promise<packageData[]> => {
     if (typeof this.#options.getPackages !== "function") return this.#internalPackage.filter(data => !!data);
@@ -65,14 +70,11 @@ export class packageManeger {
   async close() {
     if (typeof this.#options?.close === "function") await Promise.resolve().then(() => this.#options.close());
   }
-  async Sync(config: aptStreamConfig): Promise<string[]> {
+  async Sync() {
     const packagesArray = await this.search();
-    const toDelete = packagesArray.filter(data => !(config.repository[data.packageDistribuition] && config.repository[data.packageDistribuition].source.find(rel => rel.id === data.id))).reduce((acc, data) => {
-      if (!acc.includes(data.id)) acc.push(data.id);
-      return acc;
-    }, [] as string[]);
-    for (const sourceID of toDelete) await this.deleteRepositorySource(sourceID);
-    return toDelete;
+    const toDelete = packagesArray.filter(pkg => !(this.#repoConfig.repository[pkg.packageDistribuition]?.source?.find(d => d.id === pkg.id)));
+    await Promise.all(toDelete.map(async pkg => this.deleteRepositorySource(pkg.id)));
+    return Array.from(new Set(toDelete.map(pkg => pkg.id)));
   }
 }
 
@@ -80,8 +82,12 @@ export async function connect(config: aptStreamConfig) {
   const { database } = config;
   if (database.drive === "mongodb") {
     const client = await (new mongoDB.MongoClient(database.url)).connect();
+    client.on("error", err => console.error(err));
     const collection = client.db(database.databaseName ?? "apt-stream").collection<packageData>(database.collection ?? "packages");
     return new packageManeger({
+      async close() {
+        await client.close();
+      },
       async getPackages() {
         return Array.from((await collection.find().toArray()).map((data): packageData => {
           delete data._id;
@@ -107,12 +113,11 @@ export async function connect(config: aptStreamConfig) {
       async deleteSource(id) {
         await collection.findOneAndDelete({id});
       },
-    });
+    }).setConfig(config);
   } else if (database.drive === "couchdb") {
     const nanoClient = nano(database.url);
     await new Promise<void>((done, reject) => nanoClient.session().then(res => res.ok ? done() : reject(res)));
     const db = nanoClient.db.use<packageData>(database.databaseName ?? "aptStream");
-
     return new packageManeger({
       async getPackages() {
         return (await db.list({include_docs: true})).rows.map(data => data.doc);
@@ -135,8 +140,8 @@ export async function connect(config: aptStreamConfig) {
       async deleteSource(id) {
         await db.list({include_docs: true}).then(data => data.rows.map(({doc}) => doc)).then(docs => docs.filter((doc) => doc.id === id)).then(data => Promise.all(data.map(async doc => db.destroy(doc._id, doc._rev))));
       },
-    });
+    }).setConfig(config);
   }
 
-  return new packageManeger();
+  return new packageManeger().setConfig(config);
 }
