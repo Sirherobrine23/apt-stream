@@ -14,6 +14,7 @@ import fs from "node:fs/promises";
 import { cpus } from "node:os";
 import { MongoClient } from "mongodb";
 import nano from "nano";
+import { apt } from "@sirherobrine23/debian";
 
 async function simpleQuestion<T = any>(promp: QuestionCollection): Promise<Awaited<T>> {
   promp["name"] ??= "No name";
@@ -38,6 +39,10 @@ async function createSource(): Promise<repositorySource> {
       {
         value: "http",
         name: "HTTP Directly"
+      },
+      {
+        value: "mirror",
+        name: "APT Mirror"
       },
       {
         value: "github",
@@ -304,6 +309,13 @@ async function createSource(): Promise<repositorySource> {
       auth,
       tags
     };
+  } else if (target === "mirror") {
+    const config = apt.parseSourceList(await simpleQuestion({
+      type: "editor",
+      message: "configFile"
+    })).filter(d => d.type === "packages");
+    if (config.length >= 0) return {type: "mirror", config};
+    console.log("Invalid sources");
   }
 
   console.log("Try again");
@@ -340,8 +352,16 @@ async function manegerSource(config: aptStreamConfig, repositoryName: string): P
         type: "confirm",
         message: "Are you sure what you're doing, can this process be irreversible?"
       })) {
-        delete config.repository[repositoryName];
-        console.log("Repository (%O) deleted from config file!", repositoryName);
+        const wait = ora("Deleting").start();
+        try {
+          const db = await connect(config);
+          await Promise.all(config.repository[repositoryName].source.map(async ({id}) => db.deleteRepositorySource(id)));
+          delete config.repository[repositoryName];
+          await db.close();
+          wait.succeed(format("Repository (%O) deleted from config file!", repositoryName));
+        } catch (err) {
+          wait.fail(err?.message || String(err));
+        }
         return config;
       }
       console.log("Repository delete aborted!");
@@ -439,7 +459,7 @@ export default async function main(configPath: string, configOld?: aptStreamConf
     console.log("Init fist repository config!");
     return createRepository(localConfig).then(d => main(configPath, d));
   }
-  const target = await simpleQuestion<"new"|"serverManeger"|"edit"|"load"|"syncPkgs"|"exit">({
+  const target = await simpleQuestion<"new"|"serverManeger"|"edit"|"load"|"exit">({
     type: "list",
     message: "Select action",
     choices: [
@@ -447,7 +467,6 @@ export default async function main(configPath: string, configOld?: aptStreamConf
       {name: "Create new Repository", value: "new"},
       {name: "Edit repository", value: "edit"},
       {name: "Sync repository", value: "load"},
-      {name: "Sync packages", value: "syncPkgs"},
       {name: "Exit", value: "exit"}
     ]
   });
@@ -460,24 +479,23 @@ export default async function main(configPath: string, configOld?: aptStreamConf
         choices: Object.keys(localConfig.repository)
       });
       configOld = await manegerSource(localConfig, repoName);
-    } else if (target === "syncPkgs") {
-      const load = ora("Synchronizing packages with source repositories...").start();
-      await save(configPath, localConfig);
-      const db = await connect(localConfig);
-      await db.Sync().then(() => db.close()).then(() => load.succeed("Synchronized successfully!")).catch(err => load.fail(err?.message||String(err)));
     } else if (target === "load") {
       await save(configPath, localConfig);
       const message = ora("Loading packages...").start();
       const db = await connect(localConfig);
       const sync = new syncRepository(db, localConfig);
-      sync.on("addPackage", data => message.text = format("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName));
+      let packageCount = 0;
+      sync.on("addPackage", data => {
+        packageCount++;
+        return message.text = format("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName);
+      });
       sync.on("error", err => {
         if (err?.message) message.text = err.message;
         else console.error(err);
       });
       await sync.wait();
       await db.close();
-      message.succeed("Synced");
+      message.succeed(format("Synced Add %s", packageCount));
     } else if (target === "serverManeger") {
       async function serverConfig(config: aptStreamConfig) {
         const quest = await simpleQuestion<"gpg"|"setDB"|"setCluster"|"exit">({

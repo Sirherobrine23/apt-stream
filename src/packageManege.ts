@@ -17,6 +17,9 @@ export async function fileRestore(packageDb: packageData, repoConfig: aptStreamC
   if (source.type === "http") {
     const { url, auth: { header, query } } = source;
     return coreHttp.streamRequest(url, {headers: header, query});
+  } else if (source.type === "mirror") {
+    const { debUrl } = packageDb.fileRestore;
+    return coreHttp.streamRequest(debUrl);
   } else if (source.type === "github") {
     const { token } = source, { url } = packageDb.fileRestore;
     return coreHttp.streamRequest(url, {headers: token ? {"Authorization": "token "+token} : {}});
@@ -50,9 +53,7 @@ export class syncRepository extends EventEmitter {
   constructor(packageManeger: packageManeger, config: aptStreamConfig, repository = Object.keys(config.repository)) {
     super({captureRejections: true});
     (async () => {
-      console.log("Checking sources is sync");
       await packageManeger.setConfig(config).Sync().catch(err => this.emit("error", err));
-      console.log("Checking sources ok");
       for (const repo of repository || Object.keys(config.repository)) {
         const source = config.repository[repo]?.source;
         if (!source) continue;
@@ -146,6 +147,27 @@ export class syncRepository extends EventEmitter {
                 } else await addPckage();
               }
             }).then(err => this.emit("error", err));
+          } else if (target.type === "mirror") {
+            const { config } = target;
+            const packagesList = await Debian.apt.getRepoPackages(config);
+            for (const repoUrl in packagesList) {
+              for (const distName in packagesList[repoUrl]) {
+                for (const componentName in packagesList[repoUrl][distName]) {
+                  for (const arch in packagesList[repoUrl][distName][componentName]) {
+                    for (const data of packagesList[repoUrl][distName][componentName][arch]) {
+                      try {
+                        const debUrl = new URL(repoUrl);
+                        debUrl.pathname = path.posix.join(debUrl.pathname, data.Filename);
+                        const control = await Debian.parsePackage(await coreHttp.streamRequest(debUrl));
+                        this.emit("addPackage", await packageManeger.addPackage(repo, target.componentName || "main", id, {debUrl: debUrl.toString()}, control));
+                      } catch (err) {
+                        this.emit("error", err);
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }

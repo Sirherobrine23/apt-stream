@@ -1,6 +1,7 @@
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { extendsFS } from "@sirherobrine23/extends";
 import { userAuth } from "@sirherobrine23/docker-registry";
+import { apt } from "@sirherobrine23/debian"
 import fs from "node:fs/promises";
 import yaml from "yaml";
 import path from "node:path";
@@ -24,6 +25,9 @@ export type repositorySource = {
     header?: {[key: string]: string},
     query?: {[key: string]: string}
   }
+}|{
+  type: "mirror",
+  config: apt.sourceList
 }|{
   type: "github",
   /**
@@ -168,7 +172,12 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
       newConfigObject.repository[nName] ??= {source: []};
       const id = String(data?.id ?? "").startsWith("aptS__") ? data.id : "aptS__"+(crypto.randomBytes(16).toString("hex"));
       if (data.type === "http") newConfigObject.repository[nName].source.push(data);
-      else if (data.type === "github") {
+      else if (data.type === "mirror") {
+        newConfigObject.repository[nName].source.push({
+          type: "mirror",
+          config: data.config.filter(d => d.type === "packages"),
+        });
+      } else if (data.type === "github") {
         if (!data.owner?.trim()) throw new TypeError("github.owner is empty");
         if (!data.repository?.trim()) throw new TypeError("github.repository is empty");
         newConfigObject.repository[nName].source.push({
