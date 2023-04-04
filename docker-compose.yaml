@@ -23,23 +23,20 @@ services:
 
     # Wait for mongo server to be ready
     depends_on:
-      - mongo_server
+    - mongo_server
 
     # Mount volumes
     volumes:
-      - cache_deb:/data/cache_deb
-      - config:/data/config
+    - cache_deb:/data/cache_deb
+    - config:/data/config
 
     # Set extra config to "apt-stream server"
     command:
-      - "--config"
-      - "/data/config"
+    - "--db"
+    - "mongo_server"
+    - "--port"
+    - "3000"
 
     # Expose port
     ports:
-      - "3000:3000/tcp"
-
-    # Set environment variables
-    environment:
-      PORT: "3000"
-      DEB_CACHE_DIR: /data/cache_deb
+    - "3000:3000/tcp"

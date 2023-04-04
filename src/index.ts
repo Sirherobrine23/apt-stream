@@ -86,7 +86,7 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
     }
     return next();
   });
-  app.get("/", ({res}) => res.json({cluster: cluster.isWorker, id: cluster.worker?.id}));
+  app.get("/", ({res}) => res.json({cluster: cluster.worker?.id ?? 0}));
   app.get("/public(_key|)(|.gpg|.asc)", async (req, res) => {
     if (!appConfig.gpgSign) return res.status(404).json({error: "Gpg not configured"});
     // gpg --dearmor
@@ -98,7 +98,15 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
   app.use(aptRoute);
   app.use("/apt", aptRoute);
   app.all("*", ({res}) => res.status(404).json({message: "Page not exists"}));
-  app.use((err, _req, res, _next) => res.status(500).json({error: err?.message || String(err)}));
+  app.use((err, _req, res, _next) => {
+    console.error(err);
+    return res.status(500).json({
+      error: err?.message || String(err),
+      ...(appConfig.serverConfig?.logLevel === "DEBUG" ? {
+        stack: err?.stack,
+      } : {})
+    });
+  });
   app.listen(appConfig.serverConfig?.portListen ?? 0, function () {
     const address = this.address();
     console.log("Port Listen on %O", typeof address === "object" ? address.port : address);

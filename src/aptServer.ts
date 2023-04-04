@@ -15,8 +15,73 @@ expressLayer.prototype.handle_request = async function handle_request_promised(.
   if (fn.length > 3) return args.at(-1)();
   await Promise.resolve().then(() => fn.call(this, ...args)).catch(args.at(-1));
 }
+
 function returnUniq(arg1: string[]) {
   return Array.from(new Set(arg1));
+}
+
+class Release {
+  readonly Date = new Date().toUTCString();
+  constructor() {Object.defineProperty(this, "Date", {writable: false});}
+  acquireByHash = false;
+  Codename: string;
+  Origin: string;
+  Label: string;
+  Version: string;
+  Description: string;
+  Architectures = new Set<string>();
+  Components = new Set<string>();
+  md5 = new Set<{hash: string, size: number, path: string}>();
+  SHA1 = new Set<{hash: string, size: number, path: string}>();
+  SHA256 = new Set<{hash: string, size: number, path: string}>();
+  SHA512 = new Set<{hash: string, size: number, path: string}>();
+
+  toString() {
+    if (Array.from(this.Architectures.keys()).length === 0) throw new Error("Set one Arch");
+    if (Array.from(this.Components.keys()).length === 0) throw new Error("Set one Component");
+    let configString: string[] = [
+      "Date: "+(this.Date),
+      "Acquire-By-Hash: "+(this.acquireByHash ? "yes" : "no"),
+      "Architectures: "+((Array.from(this.Architectures.values())).join(" ")),
+      "Components: "+((Array.from(this.Components.values())).join(" ")),
+    ];
+
+    if (this.Codename) configString.push(`Codename: ${this.Codename}`);
+    if (this.Origin) configString.push(`Origin: ${this.Origin}`);
+    if (this.Label) configString.push(`Label: ${this.Label}`);
+    if (this.Version) configString.push(`Version: ${this.Version}`);
+    if (this.Description) configString.push(`Description: ${this.Description}`);
+
+    const md5Array = Array.from(this.md5.values()).sort((b, a) => a.size - b.size);
+    if (md5Array.length > 0) {
+      configString.push("MD5Sum:");
+      const sizeLength = md5Array.at(0).size.toString().length+2;
+      md5Array.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+    }
+
+    const sha1Array = Array.from(this.SHA1.values()).sort((b, a) => a.size - b.size);
+    if (sha1Array.length > 0) {
+      configString.push("SHA1:");
+      const sizeLength = sha1Array.at(0).size.toString().length+2;
+      sha1Array.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+    }
+
+    const sha256Array = Array.from(this.SHA256.values()).sort((b, a) => a.size - b.size);
+    if (sha256Array.length > 0) {
+      configString.push("SHA256:");
+      const sizeLength = sha256Array.at(0).size.toString().length+2;
+      sha256Array.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+    }
+
+    const sha512Array = Array.from(this.SHA512.values()).sort((b, a) => a.size - b.size);
+    if (sha512Array.length > 0) {
+      configString.push("SHA512:");
+      const sizeLength = sha512Array.at(0).size.toString().length+2;
+      sha512Array.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+    }
+
+    return configString.join("\n");
+  }
 }
 
 export default function main(packageManeger: packageManeger, config: aptStreamConfig) {
@@ -44,94 +109,117 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
 
   async function createRelease(packagesArr: packageData[], aptRoot: string) {
     const { aptConfig } = config.repository[packagesArr.at(-1).packageDistribuition] ?? {};
+    const Rel = new Release();
+    const alt = packagesArr.find(a => !!a.packageDistribuition).packageDistribuition;
+
     // Origin
-    let Origin: string;
-    if (aptConfig?.Origin) Origin = aptConfig.Origin;
+    if (aptConfig?.Origin) Rel.Origin = aptConfig.Origin;
+    else Rel.Origin = alt;
 
     // Lebel
-    let Label: string;
-    if (aptConfig?.Label) Label = aptConfig.Label;
-
-    // Description
-    let Description: string;
-    if (aptConfig?.Description) Description = aptConfig.Description.split("\n")[0]?.trim();
-
-    // Version
-    let Version: string;
-    if (aptConfig?.Version) Version = String(aptConfig.Version).trim();
+    if (aptConfig?.Label) Rel.Label = aptConfig.Label;
+    else Rel.Label = alt;
 
     // Codename
-    let Codename: string;
-    if (aptConfig?.Codename) Codename = String(aptConfig.Codename).trim();
+    if (aptConfig?.Codename) Rel.Codename = String(aptConfig.Codename).trim();
+    else Rel.Codename = alt ?? "";
+
+    // Description
+    if (aptConfig?.Description) Rel.Description = aptConfig.Description.split("\n")[0]?.trim();
+
+    // Version
+    if (aptConfig?.Version) Rel.Version = String(aptConfig.Version).trim();
 
     const Components = returnUniq(packagesArr.map(k => k.packageComponent));
     const arch = returnUniq(packagesArr.map(k => k.packageControl.Architecture));
-    const releaseData: {[keyName: string]: string|(string|{hash: string, size: number, path: string})[]} = {
-      Date: new Date().toUTCString(),
-      Architectures: arch,
-      Components,
-      Codename,
-      Origin,
-      Label,
-      Version,
-      Description,
-    };
 
-    const data = (await Promise.all(Components.map(async componentName => {
+    Components.forEach(d => Rel.Components.add(d));
+    arch.forEach(d=> Rel.Architectures.add(d));
+
+    await Promise.all(Components.map(async componentName => {
       return Promise.all(arch.map(async archName => {
         const packagesTarget = packagesArr.filter(k => (k.packageComponent === componentName) && (k.packageControl.Architecture === archName));
         return Promise.all([
           createPackage(packagesTarget, aptRoot).then(data => ({
             hash: data,
             path: `${componentName}/binary-${archName}/Packages`
-          })),
+          })).then(res => {
+            Rel.SHA1.add({
+              hash: res.hash.hash.sha1,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.SHA256.add({
+              hash: res.hash.hash.sha256,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.SHA512.add({
+              hash: res.hash.hash.sha512,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.md5.add({
+              hash: res.hash.hash.md5,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+          }),
           createPackage(packagesTarget, aptRoot, "gzip").then(data => ({
             hash: data,
             path: `${componentName}/binary-${archName}/Packages.gz`
-          })),
+          })).then(res => {
+            Rel.SHA1.add({
+              hash: res.hash.hash.sha1,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.SHA256.add({
+              hash: res.hash.hash.sha256,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.SHA512.add({
+              hash: res.hash.hash.sha512,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.md5.add({
+              hash: res.hash.hash.md5,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+          }),
           createPackage(packagesTarget, aptRoot, "lzma").then(data => ({
             hash: data,
             path: `${componentName}/binary-${archName}/Packages.xz`
-          })),
+          })).then(res => {
+            Rel.SHA1.add({
+              hash: res.hash.hash.sha1,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.SHA256.add({
+              hash: res.hash.hash.sha256,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.SHA512.add({
+              hash: res.hash.hash.sha512,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+            Rel.md5.add({
+              hash: res.hash.hash.md5,
+              path: res.path,
+              size: res.hash.byteLength
+            });
+          }),
         ]);
       }));
-    }))).flat(3);
+    }));
 
-    data.forEach(({ path, hash: {byteLength, hash} }) => {
-      for (let t in hash) {
-        const d: string = hash[t];
-        if (t === "md5") t = "MD5Sum";
-        else t = t.toUpperCase();
-        releaseData[t] ??= [];
-        (releaseData[t] as any[]).push({
-          hash: d,
-          size: byteLength,
-          path
-        });
-      }
-    });
-
-    return Object.keys(releaseData).reduce((main, keyName) => {
-      let data = releaseData[keyName];
-      if (!data) return main;
-      if (typeof data === "string") main.push(`${keyName}: ${data}`);
-      else if (data instanceof Array) {
-        data = data.filter(Boolean);
-        if (!data.length) return main;
-        main.push(`${keyName}:`);
-        // data.sort((a, b) => {
-        //   if (typeof a === "string") return 0;
-        //   else if (typeof b === "string") return 0;
-        //   return b.size - a.size;
-        // });
-        for (const line of data) {
-          if (typeof line === "string") {
-            main[main.length - 1] += ` ${line}`;
-          } else main.push(`  ${line.hash} ${line.size} ${line.path}`);
-        }
-      }
-      return main;
-    }, [] as string[]).join("\n");
+    return Rel.toString();
   }
 
   // Get dists
@@ -139,7 +227,7 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
   app.get("/dists(|/.)/:distName/((InRelease|Release(.gpg)?))", async (req, res) => {
     const packages = await packageManeger.search({packageDist: req.params["distName"]});
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
-    let Release = await createRelease(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../.."));
+    let Release = await createRelease(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../.."));
     const lowerPath = req.path.toLowerCase();
     if (lowerPath.endsWith("inrelease")||lowerPath.endsWith("release.gpg")) {
       if (!gpgSign) return res.status(404).json({ error: "Repository not signed" });
@@ -161,7 +249,7 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     const { distName, componentName, Arch } = req.params;
     const packages = await packageManeger.search({packageDist: distName, packageComponent: componentName, packageArch: Arch});
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
-    return createPackage(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../../.."), req.path.endsWith(".gzip") ? "gzip" : req.path.endsWith(".xz") ? "lzma" : undefined, (str) => str.pipe(res.writeHead(200, {})));
+    return createPackage(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../../../.."), req.path.endsWith(".gzip") ? "gzip" : req.path.endsWith(".xz") ? "lzma" : undefined, (str) => str.pipe(res.writeHead(200, {})));
   });
   app.get("/dists(|/.)/:distName/:componentName/source/Sources", async (req, res) => res.status(404).json({disabled: true, parm: req.params}));
   app.get("/pool", async ({res}) => packageManeger.search({}).then(data => res.json(data)));

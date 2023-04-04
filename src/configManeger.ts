@@ -3,13 +3,17 @@ import { config, aptStreamConfig, save, repositorySource } from "./config.js";
 import inquirer, { QuestionCollection } from "inquirer";
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { syncRepository } from "./packageManege.js";
+import { extendsFS } from "@sirherobrine23/extends";
 import { connect } from "./database.js";
+import { format } from "node:util";
 import { Github } from "@sirherobrine23/http";
 import openpgp from "openpgp";
+import path from "node:path";
 import ora from "ora";
-import path from "path";
-import fs from "fs/promises";
-import { extendsFS } from "@sirherobrine23/extends";
+import fs from "node:fs/promises";
+import { cpus } from "node:os";
+import { MongoClient } from "mongodb";
+import nano from "nano";
 
 async function simpleQuestion<T = any>(promp: QuestionCollection): Promise<Awaited<T>> {
   promp["name"] ??= "No name";
@@ -429,22 +433,19 @@ async function genGPG(config: aptStreamConfig): Promise<aptStreamConfig> {
 }
 
 export default async function main(configPath: string, configOld?: aptStreamConfig) {
-  if (configOld) {
-    console.log("Saving current config...");
-    await save(configPath, configOld);
-  }
+  if (configOld) await save(configPath, configOld);
   const localConfig = !configOld ? await config(configPath) : configOld;
   if (Object.keys(localConfig.repository).length === 0) {
     console.log("Init fist repository config!");
     return createRepository(localConfig).then(d => main(configPath, d));
   }
-  const target = await simpleQuestion<"new"|"gpg"|"edit"|"load"|"syncPkgs"|"exit">({
+  const target = await simpleQuestion<"new"|"serverManeger"|"edit"|"load"|"syncPkgs"|"exit">({
     type: "list",
     message: "Select action",
     choices: [
-      {name: "Edit repository", value: "edit"},
+      {name: "Edit server configs", value: "serverManeger"},
       {name: "Create new Repository", value: "new"},
-      {name: "(Re)generate gpg keys", value: "gpg"},
+      {name: "Edit repository", value: "edit"},
       {name: "Sync repository", value: "load"},
       {name: "Sync packages", value: "syncPkgs"},
       {name: "Exit", value: "exit"}
@@ -452,7 +453,6 @@ export default async function main(configPath: string, configOld?: aptStreamConf
   });
   if (target !== "exit") {
     if (target === "new") configOld = await createRepository(localConfig);
-    if (target === "gpg") configOld = await genGPG(localConfig);
     else if (target === "edit") {
       const repoName = await simpleQuestion<string>({
         type: "list",
@@ -461,23 +461,130 @@ export default async function main(configPath: string, configOld?: aptStreamConf
       });
       configOld = await manegerSource(localConfig, repoName);
     } else if (target === "syncPkgs") {
-      const load = ora("Synchronizing packages with source repositories...");
+      const load = ora("Synchronizing packages with source repositories...").start();
       await save(configPath, localConfig);
       const db = await connect(localConfig);
       await db.Sync().then(() => db.close()).then(() => load.succeed("Synchronized successfully!")).catch(err => load.fail(err?.message||String(err)));
     } else if (target === "load") {
-      console.log("Saving...");
       await save(configPath, localConfig);
-      console.log("Now loading all packages");
+      const message = ora("Loading packages...").start();
       const db = await connect(localConfig);
       const sync = new syncRepository(db, localConfig);
-      sync.on("addPackage", data => console.log("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName));
+      sync.on("addPackage", data => message.text = format("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName));
       sync.on("error", err => {
-        if (err?.message) console.log("%s\n%s", err.message, err.stack);
+        if (err?.message) message.text = err.message;
         else console.error(err);
       });
       await sync.wait();
       await db.close();
+      message.succeed("Synced");
+    } else if (target === "serverManeger") {
+      async function serverConfig(config: aptStreamConfig) {
+        const quest = await simpleQuestion<"gpg"|"setDB"|"setCluster"|"exit">({
+          name: "action",
+          type: "list",
+          choices: [
+            {name: "Generate gpg keys", value: "gpg"},
+            {name: "Set database config", value: "setDB"},
+            {name: "Set cluster forks", value: "setCluster"},
+            {name: "Return", value: "exit"}
+          ]
+        });
+        await save(configPath, config);
+        if (quest !== "exit") {
+          if (quest === "gpg") config = await genGPG(config);
+          else if (quest === "setCluster") {
+            config.serverConfig ??= {};
+            const cores = config.serverConfig.clusterCount ?? (cpus().length || 1);
+            config.serverConfig.clusterCount = Number(await simpleQuestion({
+              message: "Will fork rooms be created?",
+              type: "number",
+              default: cores,
+              validate(input) {
+                const n = Number(input);
+                if (n === 0 || (n >= 1 && n <= 256)) return true;
+                return "Invalid number allow 0 at 256";
+              },
+            }));
+          } else if (quest === "setDB") {
+            const setup = async () => {
+              const db = await simpleQuestion<"mongo"|"couch">({
+                message: "Choice Database:",
+                type: "list",
+                choices: [
+                  {name: "Mongo Database", value: "mongo"},
+                  {name: "Apache Couch Database", value: "couch"}
+                ]
+              });
+              if (db === "mongo") {
+                const prompts = await inquirer.prompt([
+                  {
+                    name: "uri",
+                    type: "input",
+                    async validate(input) {
+                      try {
+                        await (await (new MongoClient(input, {connectTimeoutMS: 5000, serverSelectionTimeoutMS: 5000})).connect()).close();
+                        return true;
+                      } catch (err) {
+                        return err?.message || String(err);
+                      }
+                    },
+                  },
+                  {
+                    name: "database",
+                    type: "input",
+                    default: "apt-stream"
+                  },
+                  {
+                    name: "collection",
+                    type: "input",
+                    default: "packages"
+                  },
+                ]);
+                config.database = {
+                  drive: "mongodb",
+                  url: prompts.uri,
+                  databaseName: prompts.database,
+                  collection: prompts.collection
+                };
+              } else if (db === "couch") {
+                const prompts = await inquirer.prompt([
+                  {
+                    name: "uri",
+                    type: "input",
+                    async validate(input) {
+                      try {
+                        const nanoClient = nano(input);
+                        if ((await nanoClient.session()).ok) return true;
+                        return "Not authenticated or invalid auth";
+                      } catch (err) {
+                        return err?.message || String(err);
+                      }
+                    },
+                  },
+                  {
+                    name: "database",
+                    type: "input",
+                    default: "aptStream",
+                  }
+                ]);
+                config.database = {
+                  drive: "couchdb",
+                  url: prompts.uri,
+                  databaseName: prompts.database
+                };
+              } else {
+                console.info("Invalid database!");
+                return setup();
+              }
+            }
+            await setup();
+          }
+          return serverConfig(config);
+        }
+        return config;
+      }
+      configOld = await serverConfig(localConfig);
     }
     return main(configPath, configOld);
   }

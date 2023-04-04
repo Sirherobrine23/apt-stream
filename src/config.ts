@@ -147,8 +147,8 @@ export async function createConfig(configPath: string) {
 export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?: Partial<aptStreamConfig>) {
   const newConfigObject: aptStreamConfig = {
     serverConfig: {
-      portListen: optionsOverload?.serverConfig?.portListen ?? tmpConfig.serverConfig?.portListen ?? 3000,
-      clusterCount: optionsOverload?.serverConfig?.clusterCount ?? tmpConfig.serverConfig?.clusterCount ?? 0,
+      portListen: optionsOverload?.serverConfig?.portListen ?? tmpConfig?.serverConfig?.portListen ?? 3000,
+      clusterCount: optionsOverload?.serverConfig?.clusterCount ?? tmpConfig?.serverConfig?.clusterCount ?? 0,
       logLevel: optionsOverload?.serverConfig?.logLevel ?? tmpConfig?.serverConfig?.logLevel ?? "SILENCE",
     },
     database: optionsOverload?.database ?? tmpConfig.database,

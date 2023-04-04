@@ -1,8 +1,8 @@
 import * as Debian from "@sirherobrine23/debian";
 import { aptStreamConfig } from "./config.js";
+import { format } from "node:util";
 import mongoDB from "mongodb";
 import nano from "nano";
-import { format } from "node:util";
 
 export interface packageData {
   packageComponent: string;
