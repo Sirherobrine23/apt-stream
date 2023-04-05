@@ -149,25 +149,13 @@ export class syncRepository extends EventEmitter {
             }).then(err => this.emit("error", err));
           } else if (target.type === "mirror") {
             const { config } = target;
-            const packagesList = await Debian.apt.getRepoPackages(config);
-            for (const repoUrl in packagesList) {
-              for (const distName in packagesList[repoUrl]) {
-                for (const componentName in packagesList[repoUrl][distName]) {
-                  for (const arch in packagesList[repoUrl][distName][componentName]) {
-                    for (const data of packagesList[repoUrl][distName][componentName][arch]) {
-                      try {
-                        const debUrl = new URL(repoUrl);
-                        debUrl.pathname = path.posix.join(debUrl.pathname, data.Filename);
-                        const control = await Debian.parsePackage(await coreHttp.streamRequest(debUrl));
-                        this.emit("addPackage", await packageManeger.addPackage(repo, target.componentName || "main", id, {debUrl: debUrl.toString()}, control));
-                      } catch (err) {
-                        this.emit("error", err);
-                      }
-                    }
-                  }
-                }
-              }
-            }
+            const at = Debian.apt.getRepoPackages(config).on("error", err => this.emit("error", err)).on("package", async (repoUrl, _distname, componentName, _arch, data) => {
+              const debUrl = new URL(repoUrl);
+              debUrl.pathname = path.posix.join(debUrl.pathname, data.Filename);
+              const control = await Debian.parsePackage(await coreHttp.streamRequest(debUrl));
+              this.emit("addPackage", await packageManeger.addPackage(repo, componentName || "main", id, {debUrl: debUrl.toString()}, control));
+            });
+            await new Promise<void>(done => at.on("close", done));
           }
         }
       }

@@ -490,8 +490,10 @@ export default async function main(configPath: string, configOld?: aptStreamConf
         return message.text = format("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName);
       });
       sync.on("error", err => {
-        if (err?.message) message.text = err.message;
-        else console.error(err);
+        if (err?.message) {
+          message.text = err.message;
+          if (localConfig.serverConfig?.logLevel === "DEBUG") message.text += " "+(err.stack || "");
+        } else console.error(err);
       });
       await sync.wait();
       await db.close();
