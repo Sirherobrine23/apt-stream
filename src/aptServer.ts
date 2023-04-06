@@ -266,7 +266,7 @@ export default function main(packageManeger: databaseManeger, config: aptStreamC
     return createPackage(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../../../.."), req.path.endsWith(".gzip") ? "gzip" : req.path.endsWith(".xz") ? "lzma" : undefined, (str) => str.pipe(res.writeHead(200, {})));
   });
 
-  app.get("/pool", async ({res}) => packageManeger.searchPackages({}).then(data => res.json(data)));
+  app.get("/pool", async ({res}) => packageManeger.searchPackages({}).then(data => res.json(data.map(d => d.controlFile))));
 
   app.get("/pool/:componentName", async (req, res) => {
     const src = packageManeger.getConfig().repository;

@@ -25,11 +25,11 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
     type: "number",
     description: "Enable cluster mode for perfomace",
     alias: "t"
-  }).option("cache", {
+  }).option("data", {
     string: true,
     alias: "C",
     type: "string",
-    description: "cache files"
+    description: "data files"
   }).option("db", {
     string: true,
     type: "string",
@@ -53,7 +53,7 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
     portListen: options.port,
     clusterCount: options.cluster,
     logLevel: (options.debug ? "DEBUG" : options.log_level as any),
-    cacheFolder: options.cache,
+    dataFolder: options.data,
   }};
   if (options.db) {
     if (options.db.startsWith("http")) partialConfig.database = {drive: "couchdb", url: options.db};

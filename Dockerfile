@@ -12,4 +12,4 @@ VOLUME [ "/data" ]
 WORKDIR /app
 COPY --from=0 /app/ ./
 RUN npm link
-ENTRYPOINT [ "apt-stream", "server", "--cache", "/data/cache" ]
+ENTRYPOINT [ "apt-stream", "server", "--data", "/data" ]

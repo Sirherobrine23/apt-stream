@@ -486,8 +486,9 @@ export default async function main(configPath: string, configOld?: aptStreamConf
 
       for (const distName of Object.keys(localConfig.repository)) {
         for (const source of localConfig.repository[distName].source) {
-          await db.registerSource(source, (control) => {
-            packageCount++
+          await db.registerSource(source, (err, control) => {
+            if (err) return console.error(err);
+            packageCount++;
             console.log("%s -> %s %s/%s (%s)", distName, source.componentName, control.Package, control.Architecture, control.Version);
           }).catch(console.error);
         }

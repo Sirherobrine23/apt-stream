@@ -75,7 +75,10 @@ export type aptStreamConfig = {
     /** Run Server in cluste mode, example 8 */
     clusterCount?: number,
 
-    cacheFolder?: string,
+    /**
+     * Storage local database and Cache files
+     */
+    dataFolder?: string,
 
     logLevel?: "DEBUG"|"WARN"|"ERROR"|"SILENCE"
   },
@@ -104,6 +107,8 @@ export type aptStreamConfig = {
      * @default 'apt-stream'
      */
     databaseName?: string,
+  }|{
+    drive: "local"
   },
 
   gpgSign?: {
@@ -154,13 +159,21 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
       portListen: optionsOverload?.serverConfig?.portListen ?? tmpConfig?.serverConfig?.portListen ?? 3000,
       clusterCount: optionsOverload?.serverConfig?.clusterCount ?? tmpConfig?.serverConfig?.clusterCount ?? 0,
       logLevel: optionsOverload?.serverConfig?.logLevel ?? tmpConfig?.serverConfig?.logLevel ?? "SILENCE",
+      dataFolder: optionsOverload?.serverConfig?.dataFolder ?? tmpConfig?.serverConfig?.dataFolder
     },
     database: optionsOverload?.database ?? tmpConfig.database,
     gpgSign: (optionsOverload?.gpgSign ?? tmpConfig.gpgSign),
     repository: {},
   };
 
+  if (newConfigObject.serverConfig?.dataFolder) newConfigObject.serverConfig.dataFolder = path.resolve(process.cwd(), newConfigObject.serverConfig?.dataFolder);
+
+  // Database
+  if (!newConfigObject.database) if (newConfigObject?.serverConfig?.dataFolder) newConfigObject.database = {drive: "local"};
+
+  // GPG Assign
   if (newConfigObject.gpgSign) {
+    if (!newConfigObject.gpgSign.authPassword) delete newConfigObject.gpgSign.authPassword;
     if (!newConfigObject.gpgSign.private.content && newConfigObject.gpgSign.private.path) newConfigObject.gpgSign.private.content = await fs.readFile(path.resolve(process.cwd(), newConfigObject.gpgSign.private.path), "utf8");
     if (!newConfigObject.gpgSign.public.content && newConfigObject.gpgSign.public.path) newConfigObject.gpgSign.public.content = await fs.readFile(path.resolve(process.cwd(), newConfigObject.gpgSign.public.path), "utf8");
   }
@@ -172,23 +185,28 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
       newConfigObject.repository[nName] ??= {source: []};
       const id = String(data?.id ?? "").startsWith("aptS__") ? data.id : "aptS__"+(crypto.randomBytes(16).toString("hex"));
       const componentName = String(data.componentName || "main").trim();
-      if (data.type === "http") newConfigObject.repository[nName].source.push(data);
-      else if (data.type === "mirror") {
+      if (data.type === "http") {
         newConfigObject.repository[nName].source.push({
-          type: "mirror",
-          componentName,
+          type: "http", id, componentName,
+          url: data.url,
+          auth: {
+            header: data.auth?.header,
+            query: data.auth?.query,
+          }
+        });
+      } else if (data.type === "mirror") {
+        if (data.config.filter(d => d.type === "packages").length > 0) newConfigObject.repository[nName].source.push({
+          type: "mirror",id, componentName,
           config: data.config.filter(d => d.type === "packages"),
         });
       } else if (data.type === "github") {
         if (!data.owner?.trim()) throw new TypeError("github.owner is empty");
         if (!data.repository?.trim()) throw new TypeError("github.repository is empty");
         newConfigObject.repository[nName].source.push({
-          type: "github",
+          type: "github", componentName, id,
           owner: data.owner,
           repository: data.repository,
           token: (typeof data.token === "string" && data.token.trim()) ? data.token : null,
-          componentName,
-          id,
           ...(data.subType === "release" ? {
             subType: "release",
             tag: data.tag?.filter(Boolean)
@@ -205,9 +223,7 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
         else if (!data.authConfig.auth) throw new TypeError("required oracleBucket.authConfig.auth");
 
         newConfigObject.repository[nName].source.push({
-          type: "oracle_bucket",
-          componentName,
-          id,
+          type: "oracle_bucket", componentName, id,
           authConfig: {
             region: data.authConfig.region,
             namespace: data.authConfig.namespace,
@@ -220,9 +236,7 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
         if (!data.clientId) throw new TypeError("required googleDriver.clientId to auth");
         else if (!data.clientSecret) throw new TypeError("required googleDriver.clientSecret to auth");
         newConfigObject.repository[nName].source.push({
-          type: "google_driver",
-          componentName,
-          id,
+          type: "google_driver", componentName, id,
           clientId: data.clientId,
           clientSecret: data.clientSecret,
           clientToken: data.clientToken,
@@ -231,9 +245,7 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
       } else if (data.type === "docker") {
         if (!data.image) throw new TypeError("misconfigured docker image, check your docker.image");
         newConfigObject.repository[nName].source.push({
-          type: "docker",
-          componentName,
-          id,
+          type: "docker", componentName, id,
           image: data.image,
           auth: data.auth ? {username: data.auth!.username, password: data.auth!.password} : undefined,
           tags: data.tags instanceof Array ? data.tags.map(String) : [],
