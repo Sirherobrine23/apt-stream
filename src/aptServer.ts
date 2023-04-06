@@ -1,8 +1,7 @@
 import * as Debian from "@sirherobrine23/debian";
-import { packageManeger, packageData } from "./database.js";
+import { databaseManeger, dbStorage } from "./packages.js";
 import { aptStreamConfig } from "./config.js";
 import { extendsCrypto } from "@sirherobrine23/extends";
-import { fileRestore } from "./packageManege.js"
 import expressLayer from "express/lib/router/layer.js";
 import express from "express";
 import openpgp from "openpgp";
@@ -82,24 +81,29 @@ class Release {
 
     return configString.join("\n");
   }
+
+  toJSON() {
+    return {};
+  }
 }
 
-export default function main(packageManeger: packageManeger, config: aptStreamConfig) {
+export default function main(packageManeger: databaseManeger, config: aptStreamConfig) {
   const { gpgSign } = config;
   const app = express.Router();
-  async function createPackage(packagesArray: packageData[], pathRoot: string, compress?: "gzip"|"lzma", callback: (stream: stream.Readable) => void = () => {}) {
+  async function createPackage(packagesArray: dbStorage[], pathRoot: string, compress?: "gzip"|"lzma", callback: (stream: stream.Readable) => void = () => {}) {
     const __stream = new stream.Readable({read() {}});
     const comp = compress ? __stream.pipe(compress === "lzma" ? lzma.Compressor() : zlib.createGzip()) : null;
     callback(comp ? comp : __stream);
     return Promise.resolve().then(async () => {
       for (let packIndex = 0; packIndex < packagesArray.length; packIndex++) {
         if (packIndex !== 0) __stream.push(Buffer.from("\n\n"));
-        const { packageControl: control, packageComponent } = packagesArray[packIndex];
+        const packageComponent = packageManeger.returnSource(packagesArray[packIndex].repositoryID).componentName ?? "main";
+        const { controlFile: control } = packagesArray[packIndex];
         const hash = control.SHA1 || control.SHA256 || control.SHA512 || control.MD5sum;
         if (!hash) continue;
         __stream.push(Debian.createControl(Object.assign({
           ...control,
-          Filename: path.resolve("/", pathRoot ?? "", "pool", packageComponent ?? "main", `${hash}.deb`).slice(1),
+          Filename: path.resolve("/", pathRoot ?? "", "pool", packageComponent, `${hash}.deb`).slice(1),
         })), "utf8");
       }
       __stream.push(null);
@@ -107,22 +111,22 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     });
   }
 
-  async function createRelease(packagesArr: packageData[], aptRoot: string) {
-    const { aptConfig } = config.repository[packagesArr.at(-1).packageDistribuition] ?? {};
+  async function createRelease(packagesArr: dbStorage[], aptRoot: string) {
+    const distName = packageManeger.findRepository(packagesArr.at(0).repositoryID);
+    const { aptConfig, source } = config.repository[distName];
     const Rel = new Release();
-    const alt = packagesArr.find(a => !!a.packageDistribuition).packageDistribuition;
 
     // Origin
     if (aptConfig?.Origin) Rel.Origin = aptConfig.Origin;
-    else Rel.Origin = alt;
+    else Rel.Origin = distName;
 
     // Lebel
     if (aptConfig?.Label) Rel.Label = aptConfig.Label;
-    else Rel.Label = alt;
+    else Rel.Label = distName;
 
     // Codename
     if (aptConfig?.Codename) Rel.Codename = String(aptConfig.Codename).trim();
-    else Rel.Codename = alt ?? "";
+    else Rel.Codename = distName;
 
     // Description
     if (aptConfig?.Description) Rel.Description = aptConfig.Description.split("\n")[0]?.trim();
@@ -130,15 +134,15 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     // Version
     if (aptConfig?.Version) Rel.Version = String(aptConfig.Version).trim();
 
-    const Components = returnUniq(packagesArr.map(k => k.packageComponent));
-    const arch = returnUniq(packagesArr.map(k => k.packageControl.Architecture));
+    const Components = returnUniq(source.map(k => k.componentName ?? "main"));
+    const arch = returnUniq(packagesArr.map(k => k.controlFile.Architecture));
 
     Components.forEach(d => Rel.Components.add(d));
     arch.forEach(d=> Rel.Architectures.add(d));
 
     await Promise.all(Components.map(async componentName => {
       return Promise.all(arch.map(async archName => {
-        const packagesTarget = packagesArr.filter(k => (k.packageComponent === componentName) && (k.packageControl.Architecture === archName));
+        const packagesTarget = packagesArr.filter(k => ((packageManeger.returnSource(k.repositoryID).componentName ?? "main") === componentName) && (k.controlFile.Architecture === archName));
         return Promise.all([
           createPackage(packagesTarget, aptRoot).then(data => ({
             hash: data,
@@ -223,9 +227,11 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
   }
 
   // Get dists
-  app.get("/dists", async ({res}) => res.json(Array.from(new Set((await packageManeger.search()).map(pkg => pkg.packageDistribuition)))));
+  app.get("/dists", async ({res}) => res.json(Array.from(new Set((await packageManeger.searchPackages({})).map(pkg => packageManeger.findRepository(pkg.repositoryID))))));
+
   app.get("/dists(|/.)/:distName/((InRelease|Release(.gpg)?))", async (req, res) => {
-    const packages = await packageManeger.search({packageDist: req.params["distName"]});
+    const packages = await packageManeger.returnDistPackages(req.params["distName"]);
+
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
     let Release = await createRelease(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../.."));
     const lowerPath = req.path.toLowerCase();
@@ -245,28 +251,46 @@ export default function main(packageManeger: packageManeger, config: aptStreamCo
     return res.status(200).setHeader("Content-Type", "text/plain").setHeader("Content-Length", String(Buffer.byteLength(Release))).send(Release);
   });
 
+  // app.get("/dists(|/.)/:distName/:componentName/source/Sources", async (req, res) => res.status(404).json({disabled: true, parm: req.params}));
   app.get("/dists(|/.)/:distName/:componentName/binary-:Arch/Packages(.(gz|xz))?", async (req, res) => {
     const { distName, componentName, Arch } = req.params;
-    const packages = await packageManeger.search({packageDist: distName, packageComponent: componentName, packageArch: Arch});
+    const src = packageManeger.getConfig().repository[distName]!.source.filter(d => (d.componentName ?? "main") === componentName);
+    const packages = await packageManeger.rawSearch({
+      repositoryID: src.map(d => d.id) as any,
+      controlFile: {
+        Architecture: Arch as any,
+      }
+    });
+
     if (!packages.length) return res.status(404).json({error: "Distribuition not exsist"});
     return createPackage(packages, path.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../../../.."), req.path.endsWith(".gzip") ? "gzip" : req.path.endsWith(".xz") ? "lzma" : undefined, (str) => str.pipe(res.writeHead(200, {})));
   });
-  app.get("/dists(|/.)/:distName/:componentName/source/Sources", async (req, res) => res.status(404).json({disabled: true, parm: req.params}));
-  app.get("/pool", async ({res}) => packageManeger.search({}).then(data => res.json(data)));
+
+  app.get("/pool", async ({res}) => packageManeger.searchPackages({}).then(data => res.json(data)));
+
   app.get("/pool/:componentName", async (req, res) => {
-    const packagesList = await packageManeger.search({packageComponent: req.params.componentName});
+    const src = packageManeger.getConfig().repository;
+    const packagesList = await packageManeger.rawSearch({
+      repositoryID: (Object.keys(src).map(k => src[k].source.map(d => d.id))).flat(2) as any
+    });
     if (packagesList.length === 0) return res.status(404).json({error: "Package component not exists"});
-    return res.json(packagesList.map(({packageControl, packageDistribuition}) =>  ({control: packageControl, dist: packageDistribuition})));
+    return res.json(packagesList.map(({controlFile, repositoryID}) =>  ({controlFile, repositoryID})));
   });
+
   app.get("/pool/:componentName/(:hash)(|/data.tar|.deb)", async (req, res, next) => {
-    const packageID = (await packageManeger.search({packageComponent: req.params.componentName})).find(({packageControl}) => ([String(packageControl.SHA1), String(packageControl.SHA256), String(packageControl.SHA512), String(packageControl.MD5sum)]).includes(req.params.hash));
+    const packageID = (await packageManeger.searchPackages({
+      MD5sum: req.params.hash,
+      SHA1: req.params.hash,
+      SHA256: req.params.hash,
+      SHA512: req.params.hash,
+    })).at(0);
     if (!packageID) return res.status(404).json({error: "Package not exist"});
     if (req.path.endsWith("/data.tar")||req.path.endsWith(".deb")) {
-      const str = await fileRestore(packageID, config);
+      const str = await packageManeger.getPackageFile(packageID);
       if (req.path.endsWith(".deb")) return str.pipe(res.writeHead(200, {}));
       return (await Debian.getPackageData(str)).pipe(res.writeHead(200, {}));
     }
-    return res.json(packageID.packageControl);
+    return res.json(packageID.controlFile);
   });
   return app;
 }

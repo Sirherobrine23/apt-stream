@@ -2,9 +2,8 @@ import * as dockerRegistry from "@sirherobrine23/docker-registry";
 import { config, aptStreamConfig, save, repositorySource } from "./config.js";
 import inquirer, { QuestionCollection } from "inquirer";
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
-import { syncRepository } from "./packageManege.js";
+import { databaseManegerSetup } from "./packages.js";
 import { extendsFS } from "@sirherobrine23/extends";
-import { connect } from "./database.js";
 import { format } from "node:util";
 import { Github } from "@sirherobrine23/http";
 import openpgp from "openpgp";
@@ -354,8 +353,8 @@ async function manegerSource(config: aptStreamConfig, repositoryName: string): P
       })) {
         const wait = ora("Deleting").start();
         try {
-          const db = await connect(config);
-          await Promise.all(config.repository[repositoryName].source.map(async ({id}) => db.deleteRepositorySource(id)));
+          const db = await databaseManegerSetup(config);
+          await Promise.all(config.repository[repositoryName].source.map(async ({id}) => db.deleteSource(id)));
           delete config.repository[repositoryName];
           await db.close();
           wait.succeed(format("Repository (%O) deleted from config file!", repositoryName));
@@ -481,23 +480,21 @@ export default async function main(configPath: string, configOld?: aptStreamConf
       configOld = await manegerSource(localConfig, repoName);
     } else if (target === "load") {
       await save(configPath, localConfig);
-      const message = ora("Loading packages...").start();
-      const db = await connect(localConfig);
-      const sync = new syncRepository(db, localConfig);
+      console.log("Loading packages...");
       let packageCount = 0;
-      sync.on("addPackage", data => {
-        packageCount++;
-        return message.text = format("Added: %s -> %s/%s %s/%s", data.distName, data.componentName, data.control.Package, data.control.Version, data.control.Architecture, data.componentName);
-      });
-      sync.on("error", err => {
-        if (err?.message) {
-          message.text = err.message;
-          if (localConfig.serverConfig?.logLevel === "DEBUG") message.text += " "+(err.stack || "");
-        } else console.error(err);
-      });
-      await sync.wait();
+      const db = await databaseManegerSetup(localConfig);
+
+      for (const distName of Object.keys(localConfig.repository)) {
+        for (const source of localConfig.repository[distName].source) {
+          await db.registerSource(source, (control) => {
+            packageCount++
+            console.log("%s -> %s %s/%s (%s)", distName, source.componentName, control.Package, control.Architecture, control.Version);
+          }).catch(console.error);
+        }
+      }
+
       await db.close();
-      message.succeed(format("Synced Add %s", packageCount));
+      console.log("Synced added %s packages", packageCount);
     } else if (target === "serverManeger") {
       async function serverConfig(config: aptStreamConfig) {
         const quest = await simpleQuestion<"gpg"|"setDB"|"setCluster"|"exit">({

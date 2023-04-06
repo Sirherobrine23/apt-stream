@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import "./log.js";
-import { connect } from "./database.js";
+import { databaseManegerSetup } from "./packages.js";
 import { aptStreamConfig, config, convertString } from "./config.js";
 import packageManeger from "./configManeger.js";
 import express from "express";
@@ -74,7 +74,7 @@ yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCo
     for (let i = 0; i < appConfig.serverConfig.clusterCount; i++) ct();
     return console.log("Clustered");
   }
-  const db = await connect(appConfig);
+  const db = await databaseManegerSetup(appConfig);
   const app = express();
   const logLevel = appConfig?.serverConfig?.logLevel ?? "SILENCE";
   app.use((req, res, next) => {

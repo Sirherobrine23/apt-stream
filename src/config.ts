@@ -171,10 +171,12 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
       const nName = encodeURIComponent(decodeURIComponent(repoName));
       newConfigObject.repository[nName] ??= {source: []};
       const id = String(data?.id ?? "").startsWith("aptS__") ? data.id : "aptS__"+(crypto.randomBytes(16).toString("hex"));
+      const componentName = String(data.componentName || "main").trim();
       if (data.type === "http") newConfigObject.repository[nName].source.push(data);
       else if (data.type === "mirror") {
         newConfigObject.repository[nName].source.push({
           type: "mirror",
+          componentName,
           config: data.config.filter(d => d.type === "packages"),
         });
       } else if (data.type === "github") {
@@ -185,7 +187,7 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
           owner: data.owner,
           repository: data.repository,
           token: (typeof data.token === "string" && data.token.trim()) ? data.token : null,
-          componentName: (typeof data.componentName === "string" && data.componentName.trim()) ? data.componentName : null,
+          componentName,
           id,
           ...(data.subType === "release" ? {
             subType: "release",
@@ -204,7 +206,7 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
 
         newConfigObject.repository[nName].source.push({
           type: "oracle_bucket",
-          componentName: data.componentName ?? null,
+          componentName,
           id,
           authConfig: {
             region: data.authConfig.region,
@@ -219,7 +221,7 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
         else if (!data.clientSecret) throw new TypeError("required googleDriver.clientSecret to auth");
         newConfigObject.repository[nName].source.push({
           type: "google_driver",
-          componentName: data.componentName ?? null,
+          componentName,
           id,
           clientId: data.clientId,
           clientSecret: data.clientSecret,
@@ -230,7 +232,7 @@ export async function prettyConfig(tmpConfig: aptStreamConfig, optionsOverload?:
         if (!data.image) throw new TypeError("misconfigured docker image, check your docker.image");
         newConfigObject.repository[nName].source.push({
           type: "docker",
-          componentName: data.componentName ?? null,
+          componentName,
           id,
           image: data.image,
           auth: data.auth ? {username: data.auth!.username, password: data.auth!.password} : undefined,
