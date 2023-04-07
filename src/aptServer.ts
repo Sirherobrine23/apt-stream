@@ -20,8 +20,8 @@ function returnUniq(arg1: string[]) {
 }
 
 class Release {
-  readonly Date = new Date().toUTCString();
   constructor() {Object.defineProperty(this, "Date", {writable: false});}
+  readonly Date = new Date().toUTCString();
   acquireByHash = false;
   Codename: string;
   Origin: string;
@@ -83,7 +83,21 @@ class Release {
   }
 
   toJSON() {
-    return {};
+    return {
+      Date: this.Date,
+      acquireByHash: this.acquireByHash,
+      Codename: this.Codename,
+      Origin: this.Origin,
+      Label: this.Label,
+      Version: this.Version,
+      Description: this.Description,
+      Architectures: Array.from(this.Architectures.values()),
+      Components: Array.from(this.Components.values()),
+      MD5Sum: Array.from(this.md5.values()),
+      SHA1: Array.from(this.SHA1.values()),
+      SHA256: Array.from(this.SHA256.values()),
+      SHA512: Array.from(this.SHA512.values()),
+    };
   }
 }
 
