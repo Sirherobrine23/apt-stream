@@ -1,15 +1,19 @@
 import { v2 as dockerRegistry, Auth as dockerAuth, Utils as dockerUtils } from "@sirherobrine23/docker-registry";
+import { createReadStream, createWriteStream } from "node:fs";
 import { oracleBucket, googleDriver } from "@sirherobrine23/cloud";
 import { aptStreamConfig, repositorySource } from "./config.js";
 import { dpkg, apt } from "@sirherobrine23/debian";
-import { extendsFS } from "@sirherobrine23/extends";
+import { extendsCrypto, extendsFS } from "@sirherobrine23/extends";
+import { tmpdir } from "node:os";
+import streamPromise from "node:stream/promises";
+import decompress, { compress as streamCompress } from "@sirherobrine23/decompress";
 import coreHTTP, { Github } from "@sirherobrine23/http";
+import oldFs, { promises as fs } from "node:fs";
 import mongoDB from "mongodb";
+import openpgp from "openpgp";
 import stream from "node:stream";
 import path from "node:path";
 import nano from "nano";
-import fs from "node:fs/promises";
-import { createReadStream, createWriteStream } from "node:fs";
 
 export interface dbStorage {
   repositoryID: string;
@@ -18,19 +22,111 @@ export interface dbStorage {
 }
 
 export interface packagesManeger {
-  disableSearchToAdd?: boolean;
+  mongoCollection?: mongoDB.Collection<dbStorage>;
   deleteSource(...args: Parameters<(typeof databaseManeger.prototype.deleteSource)>): (void)|Promise<(void)>;
   register(data: dbStorage): void|Promise<void>;
   rawSearch(...args: Parameters<(typeof databaseManeger.prototype.rawSearch)>): (dbStorage[])|Promise<(dbStorage[])>;
   close?(): void|Promise<void>;
 };
 
-type RecursivePartial<T> = {
-  [P in keyof T]?:
-    T[P] extends (infer U)[] ? RecursivePartial<U>[] :
-    T[P] extends object ? RecursivePartial<T[P]> :
-    T[P];
-};
+type RecursivePartial<T> = {[P in keyof T]?: T[P] extends (infer U)[] ? RecursivePartial<U>[] : T[P] extends object ? RecursivePartial<T[P]> : T[P];};
+
+export class Release {
+  constructor() {Object.defineProperty(this, "Date", {writable: false});}
+  readonly Date = new Date().toUTCString();
+  acquireByHash = false;
+  Codename: string;
+  Origin: string;
+  Label: string;
+  Version: string;
+  Description: string;
+  md5 = new Set<{hash: string, size: number, path: string}>();
+  SHA1 = new Set<{hash: string, size: number, path: string}>();
+  SHA256 = new Set<{hash: string, size: number, path: string}>();
+  SHA512 = new Set<{hash: string, size: number, path: string}>();
+
+  Architectures = new Set<string>();
+  getArchs() {return Array.from(this.Architectures.values());}
+
+  Components = new Set<string>();
+  getComponents() {return Array.from(this.Components.values());}
+
+  toString() {
+    if (this.getArchs().length === 0) throw new Error("Set one Arch");
+    if (this.getComponents().length === 0) throw new Error("Set one Component");
+    let configString: string[] = [
+      "Date: "+(this.Date),
+      "Acquire-By-Hash: "+(this.acquireByHash ? "yes" : "no"),
+      "Architectures: "+(this.getArchs().join(" ")),
+      "Components: "+(this.getComponents().join(" ")),
+    ];
+
+    if (this.Codename) configString.push(`Codename: ${this.Codename}`);
+    if (this.Origin) configString.push(`Origin: ${this.Origin}`);
+    if (this.Label) configString.push(`Label: ${this.Label}`);
+    if (this.Version) configString.push(`Version: ${this.Version}`);
+    if (this.Description) configString.push(`Description: ${this.Description}`);
+
+    const md5Array = Array.from(this.md5.values()).sort((b, a) => a.size - b.size);
+    if (md5Array.length > 0) {
+      configString.push("MD5Sum:");
+      const sizeLength = md5Array.at(0).size.toString().length+2;
+      md5Array.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+    }
+
+    const sha1Array = Array.from(this.SHA1.values()).sort((b, a) => a.size - b.size);
+    if (sha1Array.length > 0) {
+      configString.push("SHA1:");
+      const sizeLength = sha1Array.at(0).size.toString().length+2;
+      sha1Array.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+    }
+
+    const sha256Array = Array.from(this.SHA256.values()).sort((b, a) => a.size - b.size);
+    if (sha256Array.length > 0) {
+      configString.push("SHA256:");
+      const sizeLength = sha256Array.at(0).size.toString().length+2;
+      sha256Array.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+    }
+
+    const sha512Array = Array.from(this.SHA512.values()).sort((b, a) => a.size - b.size);
+    if (sha512Array.length > 0) {
+      configString.push("SHA512:");
+      const sizeLength = sha512Array.at(0).size.toString().length+2;
+      sha512Array.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+    }
+
+    return configString.join("\n");
+  }
+
+  async inRelease(gpgSign: aptStreamConfig["gpgSign"], type: "sign"|"clearMessage" = "sign"): Promise<string> {
+    const privateKey = gpgSign.authPassword ? await openpgp.decryptKey({privateKey: await openpgp.readPrivateKey({ armoredKey: gpgSign.private.content }), passphrase: gpgSign.authPassword}) : await openpgp.readPrivateKey({ armoredKey: gpgSign.private.content });
+    const text = this.toString();
+    if (type === "clearMessage") return Buffer.from(await openpgp.sign({
+      signingKeys: privateKey,
+      format: "armored",
+      message: await openpgp.createMessage({text})
+    }) as any).toString("utf8");
+    return openpgp.sign({signingKeys: privateKey, format: "armored", message: await openpgp.createCleartextMessage({text})});
+  }
+
+  toJSON() {
+    return {
+      Date: this.Date,
+      acquireByHash: this.acquireByHash,
+      Codename: this.Codename,
+      Origin: this.Origin,
+      Label: this.Label,
+      Version: this.Version,
+      Description: this.Description,
+      Architectures: Array.from(this.Architectures.values()),
+      Components: Array.from(this.Components.values()),
+      MD5Sum: Array.from(this.md5.values()),
+      SHA1: Array.from(this.SHA1.values()),
+      SHA256: Array.from(this.SHA256.values()),
+      SHA512: Array.from(this.SHA512.values()),
+    };
+  }
+}
 
 export class databaseManeger {
   #appConfig: aptStreamConfig;
@@ -38,7 +134,6 @@ export class databaseManeger {
   constructor(initConfig: aptStreamConfig, func: packagesManeger) {
     this.#appConfig = initConfig;
     this.#internal = func;
-    this.#internal.disableSearchToAdd ??= false;
   }
 
   setConfig(config: aptStreamConfig) {
@@ -50,29 +145,24 @@ export class databaseManeger {
     return this.#appConfig;
   }
 
-  findRepository(repoID: string) {
-    const distName = Object.keys(this.#appConfig.repository).find(distName => this.#appConfig.repository[distName].source.find(src => src.id === repoID));
-    if (!distName) throw new Error("Repository name not exsists");
-    return distName;
-  }
-
-
-  returnSource(repoID: string) {
-    return this.#appConfig.repository[this.findRepository(repoID)].source.find(src => src.id === repoID);
-  }
-
   async close() {
     if (this.#internal.close) await this.#internal.close();
   }
 
-  async returnDistPackages(distName: string) {
-    const repo = this.#appConfig.repository[distName];
-    if (!repo) throw new Error("This repository not exists");
-    const sourcesIDs = repo.source.map(({id}) => id);
-    return (await Promise.all(sourcesIDs.map(async id => this.searchPackagesWithID(id)))).flat(2);
+  getResouces(): (repositorySource & {repositoryName: string})[] {
+    const int = this.#appConfig.repository;
+    return Object.keys(int).reduce((acc, keyRepo) => {
+      int[keyRepo].source.forEach(data => {
+        acc.push({
+          repositoryName: keyRepo,
+          ...data,
+        });
+      });
+      return acc;
+    }, []);
   }
 
-  async rawSearch(inDb: Partial<dbStorage>|RecursivePartial<dbStorage>|dbStorage) {
+  async rawSearch(inDb: Partial<dbStorage>|RecursivePartial<dbStorage>|mongoDB.Filter<dbStorage>|dbStorage) {
     const data = await this.#internal.rawSearch(inDb);
     return data;
   }
@@ -89,7 +179,7 @@ export class databaseManeger {
 
   async addPackage(repositoryID: string, control: dpkg.debianControl, restore: any): Promise<void> {
     const find = await this.searchPackages({Package: control.Package, Version: control.Version, Architecture: control.Architecture});
-    if (!this.#internal.disableSearchToAdd) if (find.find((data) => data.repositoryID === repositoryID)) throw new Error("Package is already registered");
+    if (find.find((data) => data.repositoryID === repositoryID)) throw new Error("Package is already registered");
     const insert: dbStorage = {repositoryID, restoreFile: restore, controlFile: control};
     return this.#internal.register(insert);
   }
@@ -98,8 +188,89 @@ export class databaseManeger {
     await this.#internal.deleteSource(repositoryID);
   }
 
+  async getUniqData<T = any>(key: any, filter: mongoDB.Filter<dbStorage>): Promise<T[]> {
+    if (this.#internal.mongoCollection) return this.#internal.mongoCollection.distinct(key, filter);
+    return [];
+  }
+
+  async createPackage(repositoryName: string, componentName: string, Arch: string, options?: {compress?: "gz"|"xz", appRoot?: string, callback?: (str: stream.Readable) => void}) {
+    const repositorys = this.getResouces().filter(repo => (repo.repositoryName === repositoryName) && ((repo.componentName ?? "main") === componentName));
+    if (!repositorys.length) throw new Error("Repository or Component name not exists!");
+    const { appRoot = "", callback } = (options ??= {});
+    const str = new stream.Readable({read(){}});
+    (async () => {
+      let breakLine = false;
+      for (const repo of repositorys) {
+        const componentName = repo.componentName || "main";
+        for (const { controlFile: pkg } of await this.rawSearch({repositoryID: repo.id, "controlFile.Architecture": Arch})) {
+          let pkgHash: string;
+          if (!(pkgHash = (pkg.MD5sum||pkg.SHA1||pkg.SHA256||pkg.SHA512))) continue;
+          if (breakLine) str.push("\n\n"); else breakLine = true;
+          str.push(dpkg.createControl({
+            ...pkg,
+            Filename: path.posix.join("/", appRoot, "pool", componentName, `${pkgHash}.deb`).slice(1),
+          }));
+        }
+      }
+      str.push(null);
+    })().catch(err => str.emit("error", err));
+
+    const compress = str.pipe(streamCompress(options.compress === "gz" ? "gzip" : options.compress === "xz" ? "xz" : "passThrough"));
+    if (typeof callback === "function") (async () => callback(compress))().catch(err => str.emit("error", err));
+    return extendsCrypto.createHashAsync(compress).then(({hash, byteLength}) => ({
+      filePath: path.posix.join(componentName, "binary-"+Arch, "Packages"+(options.compress === "gz" ? ".gz" : options.compress === "xz" ? ".xz" : "")),
+      fileSize: byteLength,
+      sha512: hash.sha512,
+      sha256: hash.sha256,
+      sha1: hash.sha1,
+      md5: hash.md5,
+    }));
+  }
+
+  getRepoReleaseConfig(repositoryName: string) {
+    if (!this.#appConfig.repository[repositoryName]) throw new Error("Repository not exists");
+    let config = this.#appConfig.repository[repositoryName].aptConfig;
+    config ??= {Origin: repositoryName, Label: repositoryName};
+    config.Origin ??= repositoryName;
+    config.Label ??= repositoryName;
+    return config;
+  }
+
+  async createRelease(repositoryName: string, appRoot: string) {
+    const relConfig = this.getRepoReleaseConfig(repositoryName);
+    const resources = this.getResouces().filter(repo => repo.repositoryName === repositoryName);
+    if (!resources.length) throw new Error("no repository with this name");
+    const rel = new Release();
+    rel.Description = relConfig.Description;
+    rel.Codename = relConfig.Codename;
+    rel.Version = relConfig.Version;
+    rel.Origin = relConfig.Origin;
+    rel.Label = relConfig.Label;
+
+    // Add components name
+    resources.forEach(repo => rel.Components.add(repo.componentName || "main"));
+
+    // Add control archs
+    for (const repo of resources) (await this.getUniqData("controlFile.Architecture", {repositoryID: repo.id})).forEach(arch => rel.Architectures.add(arch));
+
+    for (const arch of rel.getArchs()) for (const comp of rel.getComponents()) {
+      (await Promise.all([
+        this.createPackage(repositoryName, comp, arch, {appRoot, compress: "xz"}),
+        this.createPackage(repositoryName, comp, arch, {appRoot, compress: "gz"}),
+        this.createPackage(repositoryName, comp, arch, {appRoot}),
+      ])).forEach(({fileSize, filePath, md5, sha1, sha256, sha512}) => {
+        rel.md5.add({size: fileSize, path: filePath, hash: md5});
+        rel.SHA1.add({size: fileSize, path: filePath, hash: sha1});
+        rel.SHA256.add({size: fileSize, path: filePath, hash: sha256});
+        rel.SHA512.add({size: fileSize, path: filePath, hash: sha512});
+      });
+    }
+
+    return rel;
+  }
+
   async getPackageFile(packageTarget: dbStorage): Promise<stream.Readable> {
-    const source = this.#appConfig.repository[this.findRepository(packageTarget.repositoryID)].source.find(s => s.id === packageTarget.repositoryID);
+    const source = this.getResouces().find(data => data.id === packageTarget.repositoryID);
     if (!source) throw new Error("Package Source no more avaible please sync packages!");
     let saveCache: string;
     if (this.#appConfig.serverConfig?.dataFolder) {
@@ -259,18 +430,52 @@ export class databaseManeger {
         } else await addPckage();
       }
     } else if (target.type === "mirror") {
-      const { config } = target;
-      await new Promise<void>(done => {
-        apt.getRepoPackages(config).on("close", () => done()).on("error", err => callback(err, null)).on("package", async (repoUrl, _distname, _componentName, _arch, data) => {
-          const debUrl = new URL(repoUrl);
-          debUrl.pathname = path.posix.join(debUrl.pathname, data.Filename);
-          await this.addPackage(id, data, {debUrl: debUrl.toString()});
-          callback(null, data);
-        });
+      const { config = [] } = target;
+      const readFile = (path: string, start: number, end: number) => new Promise<Buffer>((done, reject) => {
+        let buf: Buffer[] = [];
+        oldFs.createReadStream(path, { start, end }).on("error", reject).on("data", (data: Buffer) => buf.push(data)).on("close", () => {done(Buffer.concat(buf)); buf = null;});
       });
+      for (const aptSrc of config.filter(d => d.type === "packages")) {
+        const main_url = new URL(aptSrc.src);
+        const distMain = new URL(path.posix.join(main_url.pathname, "dists", aptSrc.distname), main_url);
+        const release = apt.parseRelease(await coreHTTP.bufferRequestBody(distMain.toString()+"/InRelease").then(async data => (await openpgp.readCleartextMessage({cleartextMessage: data.toString()})).getText()).catch(() => coreHTTP.bufferRequestBody(distMain.toString()+"/Release").then(data => data.toString())));
+        for (const Component of release.Components) for (const Arch of release.Architectures.filter(arch => arch !== "all")) {
+          for (const ext of (["", ".gz", ".xz"])) {
+            const mainReq = new URL(path.posix.join(distMain.pathname, Component, `binary-${Arch}`, `Packages${ext}`), distMain);
+            const tmpFile = (path.join(tmpdir(), Buffer.from(mainReq.toString(), "utf8").toString("hex")))+".package";
+            try {
+              await streamPromise.finished((await coreHTTP.streamRequest(mainReq)).pipe(decompress()).pipe(oldFs.createWriteStream(tmpFile)));
+              const packagesLocation: {start: number, end: number}[] = [];
+              let start: number = 0, currentChuck = 0;
+              await streamPromise.finished(oldFs.createReadStream(tmpFile).on("data", (chunk: Buffer) => {
+                for (let i = 0; i < chunk.length; i++) if ((chunk[i - 1] === 0x0A) && (chunk[i] === 0x0A)) {
+                  packagesLocation.push({
+                    start,
+                    end: i + currentChuck,
+                  });
+                  start = (i + currentChuck)+1;
+                }
+                currentChuck += Buffer.byteLength(chunk, "binary");
+              }));
+              for (const { start, end } of packagesLocation) {
+                const control = dpkg.parseControl(await readFile(tmpFile, start, end));
+                await this.addPackage(id, control, {
+                  debUrl: (new URL(path.posix.join(main_url.pathname, control.Filename), main_url)).toString()
+                });
+                callback(null, control);
+              }
+              await fs.rm(tmpFile);
+              break;
+            } catch (err) {
+              callback(err, null);
+            }
+          }
+        }
+      }
     }
   }
 }
+
 
 export async function databaseManegerSetup(config: aptStreamConfig) {
   const { database } = config;
@@ -280,6 +485,7 @@ export async function databaseManegerSetup(config: aptStreamConfig) {
     mongoClient.on("error", err => console.error(err));
     const collection = mongoClient.db(database.databaseName ?? "apt-stream").collection<dbStorage>(database.collection ?? "packages");
     return new databaseManeger(config, {
+      mongoCollection: collection,
       async close() {await mongoClient.close();},
       async register(data) {await collection.insertOne(data);},
       async rawSearch(search) {return collection.find(search).toArray();},
@@ -308,26 +514,23 @@ export async function databaseManegerSetup(config: aptStreamConfig) {
     const dbFolder = path.join(dataFolder, "database");
     await fs.mkdir(dbFolder, {recursive: true});
     return new databaseManeger(config, {
-      disableSearchToAdd: true,
       async deleteSource(repositoryID) {
         const idFolder = path.join(dbFolder, repositoryID);
         if (!(await extendsFS.exists(idFolder))) return;
         await fs.rm(idFolder, {recursive: true});
       },
       async register(data) {
-        const idFolder = path.join(dbFolder, data.repositoryID);
-        if (!(await extendsFS.exists(idFolder))) await fs.mkdir(idFolder, {recursive: true});
         const hash = data.controlFile.SHA256 || data.controlFile.MD5sum;
         if (!hash) return;
-        const packageHash = path.join(idFolder, `${hash}.json`);
-        if (!(await extendsFS.exists(packageHash))) return fs.writeFile(packageHash, JSON.stringify(data));
+        const packageHash = path.join(dbFolder, data.repositoryID, `${hash}.json`);
+        if (!(await extendsFS.exists(path.dirname(packageHash)))) await fs.mkdir(path.dirname(packageHash), {recursive: true});
+        await fs.writeFile(packageHash, JSON.stringify(data));
       },
       async rawSearch(inDb) {
         const data = [];
-        function search(data, searchObj) {
-          if (typeof data === "object") {
-            if (Object.keys(data).length === 0) return true;
-            for (const key of Object.keys(data)) if (search(data[key], searchObj[key])) return true;
+        function search(data: any, searchObj: any) {
+          if (typeof data === "object" && !(data === null)) {
+            if (Object.keys(data).length > 0) for (const key of Object.keys(data)) if (search(data[key], searchObj[key])) return true;
           }
           return data === searchObj;
         };

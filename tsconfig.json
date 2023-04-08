@@ -5,7 +5,7 @@
     "moduleResolution": "NodeNext",
     "target": "ESNext",
     "forceConsistentCasingInFileNames": true,
-    "declaration": false,
+    "declaration": true,
     "strict": false,
     "noUnusedLocals": true,
     "isolatedModules": true,
@@ -13,12 +13,15 @@
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
     "allowJs": true,
+    "composite": true,
     "lib": [
-      "ESNext"
+      "ESNext",
+      "ES7"
     ]
   },
   "exclude": [
     "**/*.test.ts",
+    "**/test*/**",
     "node_modules/"
   ],
   "ts-node": {
