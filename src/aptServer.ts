@@ -17,20 +17,20 @@ export default function main(packageManeger: databaseManeger, config: aptStreamC
   // Get dists
   app.get("/dists", async ({res}) => res.json(Array.from(new Set(await packageManeger.getResouces().map(d => d.repositoryName)))));
 
-  app.get("/dists(|/.)/:distName(|(/InRelease|/Release(.gpg)?))?", async (req, res) => {
+  app.get("/dists/(:distName)(|/InRelease|/Release(.gpg)?)?", async (req, res) => {
     const lowerPath = req.path.toLowerCase(), aptRoot = path.posix.resolve("/", path.posix.join(req.baseUrl, req.path), "../../../..");
     let Release = await packageManeger.createRelease(req.params["distName"], aptRoot);
     let releaseText: string;
     if (lowerPath.endsWith("inrelease")||lowerPath.endsWith("release.gpg")) {
       if (!gpgSign) return res.status(404).json({ error: "Repository not signed" });
-      releaseText = await Release.inRelease(gpgSign, req.path.endsWith(".gpg") ? "sign" : "clearMessage");
+      releaseText = await Release.inRelease(gpgSign, req.path.endsWith(".gpg") ? "clearMessage" : "sign");
     } else if (lowerPath.endsWith("release")) releaseText = Release.toString();
     else return res.json(Release.toJSON());
     return res.status(200).setHeader("Content-Type", "text/plain").setHeader("Content-Length", String(Buffer.byteLength(releaseText))).send(releaseText);
   });
 
-  // app.get("/dists(|/.)/:distName/:componentName/source/Sources", async (req, res) => res.status(404).json({disabled: true, parm: req.params}));
-  app.get("/dists(|/.)/:distName/:componentName/binary-:Arch/Packages(.(gz|xz))?", async (req, res) => {
+  // app.get("/dists/:distName/:componentName/source/Sources", async (req, res) => res.status(404).json({disabled: true, parm: req.params}));
+  app.get("/dists/:distName/:componentName/binary-:Arch/Packages(.(gz|xz))?", async (req, res) => {
     const { distName, componentName, Arch } = req.params;
     const reqPath = req.path;
     packageManeger.createPackage(distName, componentName, Arch, {
@@ -40,23 +40,19 @@ export default function main(packageManeger: databaseManeger, config: aptStreamC
     });
   });
 
-  app.get("/pool", async ({res}) => packageManeger.searchPackages({}).then(data => res.json(data.map(d => d.controlFile))));
+  app.get("/pool", async ({res}) => packageManeger.rawSearch({}).then(data => res.json(data.map(d => d.controlFile))));
 
   app.get("/pool/:componentName", async (req, res) => {
-    const src = packageManeger.getConfig().repository;
-    const packagesList = await packageManeger.rawSearch({
-      repositoryID: (Object.keys(src).map(k => src[k].source.map(d => d.id))).flat(2) as any
-    });
-    if (packagesList.length === 0) return res.status(404).json({error: "Package component not exists"});
+    const src = packageManeger.getResouces().filter(d => (d.componentName ?? "main") === req.params.componentName);
+    if (!src.length) return res.status(404).json({error: "No component with this name"});
+    const packagesList = (await Promise.all(src.map(async ({id}) => packageManeger.rawSearch({repositoryID: id})))).flat(3);
+    if (!packagesList.length) return res.status(404).json({error: "Package component not exists"});
     return res.json(packagesList.map(({controlFile, repositoryID}) =>  ({controlFile, repositoryID})));
   });
 
   app.get("/pool/:componentName/(:hash)(|/data.tar|.deb)", async (req, res, next) => {
-    const packageID = (await packageManeger.searchPackages({
-      MD5sum: req.params.hash,
-      SHA1: req.params.hash,
-      SHA256: req.params.hash,
-      SHA512: req.params.hash,
+    const packageID = (await packageManeger.rawSearch({
+      "controlFile.SHA1": req.params.hash
     })).at(0);
     if (!packageID) return res.status(404).json({error: "Package not exist"});
     if (req.path.endsWith("/data.tar")||req.path.endsWith(".deb")) {

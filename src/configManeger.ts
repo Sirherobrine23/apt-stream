@@ -1,5 +1,5 @@
 import * as dockerRegistry from "@sirherobrine23/docker-registry";
-import { config, aptStreamConfig, save, repositorySource } from "./config.js";
+import { config, aptStreamConfig, save, repositorySource, prettyConfig } from "./config.js";
 import inquirer, { QuestionCollection } from "inquirer";
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { databaseManegerSetup } from "./packages.js";
@@ -365,14 +365,13 @@ async function manegerSource(config: aptStreamConfig, repositoryName: string): P
       }
       console.log("Repository delete aborted!");
     }
-    return manegerSource(config, repositoryName);
+    return manegerSource(await prettyConfig(config), repositoryName);
   }
-  return config;
+  return prettyConfig(config);
 }
 
 async function genGPG(config: aptStreamConfig): Promise<aptStreamConfig> {
   if (config.gpgSign) console.warn("Replacing exists gpg keys");
-
   const ask = await inquirer.prompt([
     {
       type: "input",

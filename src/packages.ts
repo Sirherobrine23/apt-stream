@@ -204,7 +204,7 @@ export class databaseManeger {
         const componentName = repo.componentName || "main";
         for (const { controlFile: pkg } of await this.rawSearch({repositoryID: repo.id, "controlFile.Architecture": Arch})) {
           let pkgHash: string;
-          if (!(pkgHash = (pkg.MD5sum||pkg.SHA1||pkg.SHA256||pkg.SHA512))) continue;
+          if (!(pkgHash = pkg.SHA1)) continue;
           if (breakLine) str.push("\n\n"); else breakLine = true;
           str.push(dpkg.createControl({
             ...pkg,
@@ -231,6 +231,7 @@ export class databaseManeger {
     if (!this.#appConfig.repository[repositoryName]) throw new Error("Repository not exists");
     let config = this.#appConfig.repository[repositoryName].aptConfig;
     config ??= {Origin: repositoryName, Label: repositoryName};
+    config.Codename ??= repositoryName;
     config.Origin ??= repositoryName;
     config.Label ??= repositoryName;
     return config;
@@ -490,7 +491,7 @@ export async function databaseManegerSetup(config: aptStreamConfig) {
       async register(data) {await collection.insertOne(data);},
       async rawSearch(search) {return collection.find(search).toArray();},
       async deleteSource(repositoryID) {
-        await collection.deleteMany(await (collection.find({repositoryID}).toArray()));
+        await collection.deleteMany({repositoryID});
       },
     });
   } else if (database.drive === "couchdb") {

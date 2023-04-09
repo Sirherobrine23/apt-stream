@@ -9,7 +9,7 @@ import cluster from "node:cluster";
 import apt from "./aptServer.js";
 import openpgp from "openpgp";
 
-yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCommand().alias("h", "help").command("server", "Run http Server", yargs => yargs.option("config", {
+yargs(process.argv.slice(2)).version(false).help(true).strictCommands().demandCommand().alias("h", "help").command(["server", "serve", "s"], "Run http Server", yargs => yargs.option("config", {
     string: true,
     alias: "c",
     type: "string",
