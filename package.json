@@ -28,8 +28,8 @@
     "apt-stream": "./src/index.js"
   },
   "scripts": {
-    "build": "tsc --build --clean && tsc",
-    "prepack": "tsc --build --clean && tsc",
+    "build": "tsc --build --clean && tsc --build",
+    "prepack": "tsc --build --clean && tsc --build",
     "postpack": "tsc --build --clean"
   },
   "devDependencies": {
@@ -52,6 +52,7 @@
     "acme-client": "^5.0.0",
     "express": "^4.18.2",
     "inquirer": "^9.1.5",
+    "inquirer-file-tree-selection-prompt": "^2.0.5",
     "lzma-native": "^8.0.6",
     "mongodb": "^5.2.0",
     "nano": "^10.1.2",

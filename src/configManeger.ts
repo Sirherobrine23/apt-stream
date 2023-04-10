@@ -1,155 +1,345 @@
-import * as dockerRegistry from "@sirherobrine23/docker-registry";
-import { config, aptStreamConfig, save, repositorySource, prettyConfig } from "./config.js";
-import inquirer, { QuestionCollection } from "inquirer";
-import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
-import { databaseManegerSetup } from "./packages.js";
-import { extendsFS } from "@sirherobrine23/extends";
-import { format } from "node:util";
-import { Github } from "@sirherobrine23/http";
-import openpgp from "openpgp";
-import path from "node:path";
-import ora from "ora";
-import fs from "node:fs/promises";
-import { cpus } from "node:os";
-import { MongoClient } from "mongodb";
-import nano from "nano";
+import { Repository, repositorySource } from "./config.js";
+import { packageManeger } from "./packages.js";
+import { googleDriver } from "@sirherobrine23/cloud";
+import { readFile } from "fs/promises";
 import { apt } from "@sirherobrine23/debian";
+import inquirerFileTreeSelection from "inquirer-file-tree-selection-prompt";
+import * as dockerRegistry from "@sirherobrine23/docker-registry";
+import coreHTTP from "@sirherobrine23/http";
+import inquirer from "inquirer";
+import path from "node:path";
+inquirer.registerPrompt("file-tree-selection", inquirerFileTreeSelection);
 
-async function simpleQuestion<T = any>(promp: QuestionCollection): Promise<Awaited<T>> {
-  promp["name"] ??= "No name";
-  return (inquirer.prompt(promp)).then(d => d[Object.keys(d).at(-1)]);
-}
-
-async function createRepository(config: aptStreamConfig): Promise<aptStreamConfig> {
-  const name = await simpleQuestion({message: "Repository name", type: "input"});
-  if (config.repository[name]) {
-    console.log("Repository are exists!");
-    return createRepository(config);
-  }
-  config.repository[name] = {source: []};
-  return manegerSource(config, name);
-}
-
-async function createSource(): Promise<repositorySource> {
-  const target = await simpleQuestion<repositorySource["type"]>({
-    type: "list",
-    message: "Select target",
-    choices: [
-      {
-        value: "http",
-        name: "HTTP Directly"
-      },
-      {
-        value: "mirror",
-        name: "APT Mirror"
-      },
-      {
-        value: "github",
-        name: "Github repository"
-      },
-      {
-        value: "google_driver",
-        name: "Google Driver"
-      },
-      {
-        value: "oracle_bucket",
-        name: "Oracle Cloud Bucket"
-      },
-      {
-        value: "docker",
-        name: "Docker or Open Container image (OCI) image"
-      }
-    ]
-  });
-
-  if (target === "http") {
-    return {
-      type: "http",
-      url: await simpleQuestion<string>({
-        message: "Package URL",
-        type: "input",
-        validate(input) {
-          try {
-            new URL(input);
-            return true;
-          } catch {
-            return "enter valid url"
-          }
+export default async function main(configManeger: packageManeger) {
+  while(true) {
+    const action = (await inquirer.prompt<{initAction: "serverEdit"|"newRepo"|"editRepo"|"syncRepo"|"exit"}>({
+      name: "initAction",
+      type: "list",
+      message: "Select action:",
+      choices: [
+        {
+          name: "Edit repository",
+          value: "editRepo"
         },
-      }),
-    };
-  } else if (target === "google_driver") {
-    const props = await inquirer.prompt([
-      {
-        name: "clientId",
-        message: "oAuth Client ID",
+        {
+          name: "Create new repository",
+          value: "newRepo"
+        },
+        {
+          name: "Synchronize packages from repositories",
+          value: "syncRepo"
+        },
+        {
+          name: "Edit server configs",
+          value: "serverEdit"
+        },
+        {
+          name: "Exit",
+          value: "exit"
+        }
+      ]
+    })).initAction;
+    if (action === "exit") break;
+    else if (action === "syncRepo") await configManeger.syncRepositorys((err, db) => err?null:console.log("Added %s: %s/%s (%S)", db.repositoryID, db.controlFile.Package, db.controlFile.Architecture, db.controlFile.Version));
+    else if (action === "newRepo") {
+      await editRepository(configManeger.createRepository((await inquirer.prompt({
+        name: "repoName",
+        message: "Repository name:",
         type: "input",
-      },
-      {
-        name: "clientSecret",
-        message: "oAuth Client Secret",
-        type: "input"
-      }
-    ]);
-    let token: googleDriver.googleCredential;
-    const gdrive = await googleDriver.GoogleDriver({
-      clientID: props.clientId,
-      clientSecret: props.clientSecret,
-      callback(err, data) {
-        if (err) throw err;
-        if (data.authUrl) return console.log("Open this link in browser: %O", data.authUrl);
-        console.log("Auth success");
-        token = data.token;
-      },
-    });
-    let id: string[] = [];
-    if (await simpleQuestion<boolean>({type: "confirm", message: "Select files?"})) {
-      const wait = ora().start("Listening files...");
-      const files = (await gdrive.listFiles().catch(err => {wait.fail(err?.message || String(err)); return Promise.reject(err);})).filter(f => f.name.endsWith(".deb"));
-      wait.succeed();
-      id = await simpleQuestion<string[]>({
-        type: "checkbox",
-        message: "Select files",
-        choices: files.map(f => ({
-          name: f.name,
-          value: f.id,
-        }))
-      });
-    }
-    return {
-      type: "google_driver",
-      clientId: props.clientId,
-      clientSecret: props.clientSecret,
-      clientToken: token,
-      gIds: id
-    };
-  } else if (target === "oracle_bucket") {
-    const { namespace, name, region, authType } = await inquirer.prompt<{namespace: string, name: string, authType: "preshared"|"user", region: oracleBucket.oracleRegions}>([
-      {
-        name: "namespace",
-        type: "input"
-      },
-      {
-        name: "name",
-        type: "input"
-      },
-      {
-        name: "authType",
+        validate: (name) => configManeger.hasSource(name.trim()) ? "Type other repository name, this are exist's" : true,
+      })).repoName), configManeger);
+    } else if (action === "editRepo") {
+      const repo = configManeger.getRepositorys();
+      const repoSelected = (await inquirer.prompt({
+        name: "repo",
+        message: "Selecte repository:",
         type: "list",
         choices: [
           {
-            name: "Pre autenticated key",
-            value: "preshared"
+            name: "Cancel",
+            value: "exit"
           },
-          {
-            name: "User",
-            value: "user"
-          },
+          ...(repo.map(d => d.repositoryName))
+        ],
+      })).repo;
+      if (repoSelected !== "exit") await editRepository(configManeger.getRepository(repoSelected), configManeger);
+    }
+    await configManeger.saveConfig().catch(() => {});
+  }
+
+  return configManeger.close().then(async () => configManeger.saveConfig());
+}
+
+async function editRepository(repo: Repository, configManeger: packageManeger) {
+  let exitShowSync = false;
+  while (true) {
+    const action = (await inquirer.prompt({
+      name: "action",
+      message: "Repository actions:",
+      type: "list",
+      choices: [
+        {
+          name: "New repository sources",
+          value: "add"
+        },
+        {
+          name: "Delete sources",
+          value: "del"
+        },
+        {
+          name: "Delete all sources",
+          value: "delAll"
+        },
+        {
+          name: "Return",
+          value: "exit"
+        }
+      ]
+    })).action;
+    if (action === "exit") break;
+    else if (action === "delAll") {
+      exitShowSync = true;
+      repo.clear();
+    } else if (action === "del") {
+      const srcs = repo.getAllRepositorys();
+      if (!srcs.length) {
+        console.info("Not sources!");
+        continue;
+      }
+      const sel: string[] = (await inquirer.prompt({
+        name: "sel",
+        type: "checkbox",
+        message: "Select IDs:",
+        choices: repo.getAllRepositorys().map(d => ({name: `${d.repositoryID} (${d.type})`, value: d.repositoryID})),
+      })).sel;
+      exitShowSync = true;
+      sel.forEach(id => repo.delete(id));
+    } else if (action === "add") {
+      repo.set(configManeger.createRepositoryID(), await createSource());
+    }
+  }
+  if (exitShowSync) console.info("Sync packages!");
+  return repo;
+}
+
+async function createSource(): Promise<repositorySource> {
+  let { srcType, componentName } = (await inquirer.prompt<{srcType: repositorySource["type"], componentName?: string}>([
+    {
+      name: "srcType",
+      type: "list",
+      choices: [
+        {
+          value: "http",
+          name: "HTTP Directly"
+        },
+        {
+          value: "mirror",
+          name: "APT Mirror"
+        },
+        {
+          value: "github",
+          name: "Github Release/Branch"
+        },
+        {
+          value: "googleDriver",
+          name: "Google Drive"
+        },
+        {
+          value: "oracleBucket",
+          name: "Oracle Cloud Infracture Bucket"
+        },
+        {
+          value: "docker",
+          name: "OCI (Open Container Iniciative)/Docker Image"
+        },
+      ]
+    },
+    {
+      type: "confirm",
+      name: "addComp",
+      message: "Add component name?",
+      default: false
+    },
+    {
+      name: "componentName",
+      when: (answers) => answers["addComp"],
+      type: "input",
+      default: "main",
+      validate: (inputComp) => (/[\s]+/).test(inputComp) ? "Remove Spaces" : true
+    }
+  ]));
+  componentName ||= "main";
+  if (srcType === "http") {
+    return {
+      type: "http", componentName,
+      url: (await inquirer.prompt({
+        name: "reqUrl",
+        type: "input",
+        validate: (urlInput) => {try {new URL(urlInput); return true} catch (err) { return err?.message || String(err); }}
+      })).reqUrl,
+    };
+  } else if (srcType === "mirror") {
+    const promps = (await inquirer.prompt([
+      {
+        type: "list",
+        name: "sourceFrom",
+        choices: [
+          {name: "Select file", value: "fileSelect"},
+          {name: "Create from scrat", value: "createIt"}
         ]
+      },
+      {
+        when: (answers) => answers["sourceFrom"] === "fileSelect",
+        name: "fileSource",
+        type: "file-tree-selection",
+        default: process.cwd(),
+        message: "Select file source path:"
+      },
+      {
+        when: (answers) => answers["sourceFrom"] !== "fileSelect",
+        name: "fileSource",
+        type: "editor",
+        message: "creating sources",
+        default: "# This is comment\ndeb http://example.com example main",
+      }
+    ]));
+
+    return {
+      type: "mirror", componentName,
+      config: (apt.parseSourceList(promps["sourceFrom"] !== "fileSelect" ? promps["fileSource"] : await readFile(promps["fileSource"], "utf8"))).filter(src => src.type === "packages")
+    };
+  } else if (srcType === "github") {
+    const promps = await inquirer.prompt([
+      {
+        name: "owner",
+        type: "input",
+        message: "Repository owner:",
+        async validate(input) {
+          try {
+            const apiReq = new URL(path.posix.join("/users", path.posix.resolve("/", input)), "https://api.github.com");
+            await coreHTTP.jsonRequestBody(apiReq);
+            return true;
+          } catch (err) {
+            return err?.message || String(err);
+          }
+        }
+      },
+      {
+        name: "repository",
+        type: "list",
+        message: "Select repository:",
+        async choices(answers) {
+          const apiReq = new URL(path.posix.join("/users", answers["owner"], "repos"), "https://api.github.com");
+          return (await coreHTTP.jsonRequestBody<{name: string}[]>(apiReq)).map(({name}) => name);
+        },
+      },
+      {
+        name: "subType",
+        type: "list",
+        message: "Where to get the .deb files?",
+        choices: [
+          "Release",
+          "Branch"
+        ]
+      }
+    ]);
+
+    const { owner, repository } = promps;
+    if (promps["subType"] === "Branch") {
+      return {
+        type: "github", subType: "branch", componentName,
+        owner, repository,
+        branch: (await inquirer.prompt({
+          name: "branch",
+          type: "list",
+          async choices() {
+            const apiReq = new URL(path.posix.join("/repos", owner, repository, "branches"), "https://api.github.com");
+            return (await coreHTTP.jsonRequestBody<{name: string}[]>(apiReq)).map(({name}) => name);
+          }
+        })).branch,
+      };
+    }
+    return {
+      type: "github", subType: "release", componentName,
+      owner, repository,
+      tag: (await inquirer.prompt({
+        name: "tags",
+        type: "checkbox",
+        async choices() {
+          const apiReq = new URL(path.posix.join("/repos", owner, repository, "releases"), "https://api.github.com");
+          return (await coreHTTP.jsonRequestBody<{tag_name: string}[]>(apiReq)).map(({tag_name}) => tag_name);
+        }
+      })).tags
+    }
+  } else if (srcType === "googleDriver") {
+    const clientPromp = await inquirer.prompt([
+      {
+        type: "input",
+        name: "secret",
+        message: "Google oAuth Client Secret:"
+      },
+      {
+        type: "input",
+        name: "id",
+        message: "Google oAuth Client ID:"
+      },
+      {
+        name: "listFiles",
+        type: "confirm",
+        message: "After authenticating Google Drive, will you want to select the files?"
+      },
+      {
+        when: (ask) => ask["listFiles"],
+        name: "folderID",
+        type: "input",
+        message: "Folder ID?"
+      }
+    ]);
+    let clientToken: any;
+    const gdrive = await googleDriver.GoogleDriver({
+      clientSecret: clientPromp["secret"],
+      clientID: clientPromp["id"],
+      callback(err, data) {
+        if (err) throw err;
+        if (data.authUrl) return console.info("Open %O to complete Google Drive Auth", data.authUrl);
+        clientToken = data.token;
+      },
+    });
+    let gIDs: string[];
+    if (clientPromp["listFiles"]) {
+      const folderID = clientPromp["folderID"]||undefined;
+      const files = (await gdrive.listFiles(folderID)).filter(file => file.name.endsWith(".deb"));
+      if (files.length <= 0) console.log("No files currently in you drive");
+      else gIDs = (await inquirer.prompt({
+        name: "ids",
+        type: "checkbox",
+        choices: files.map(file => ({name: file.name, value: file.id, checked: true}))
+      })).ids;
+    }
+
+    return {
+      type: "googleDriver", componentName,
+      clientSecret: clientPromp["secret"],
+      clientId: clientPromp["id"],
+      clientToken,
+      gIDs
+    };
+  } else if (srcType === "oracleBucket") {
+    const ociPromps = await inquirer.prompt([
+      {
+        name: "namespace",
+        type: "input",
+        message: "OCI Bucket namespace:"
+      },
+      {
+        name: "name",
+        type: "input",
+        message: "Bucket name:"
       },
       {
         name: "region",
         type: "list",
+        message: "Select Bucket region:",
         choices: [
           "af-johannesburg-1",
           "ap-chuncheon-1",
@@ -186,70 +376,78 @@ async function createSource(): Promise<repositorySource> {
           "us-sanjose-1"
         ]
       },
-    ]);
-    return {
-      type: "oracle_bucket",
-      authConfig: {
-        namespace,
-        name,
-        region,
-        auth: (authType === "preshared" ? {
-          type: "preAuthentication",
-          PreAuthenticatedKey: await simpleQuestion({type: "input", message: "Key"}),
-        } : {
-          type: "user",
-          user: await simpleQuestion({type: "input", message: "User"}),
-          tenancy: await simpleQuestion({type: "input", message: "Tenancy"}),
-          privateKey: await simpleQuestion({type: "input", message: "privateKey"}),
-          fingerprint: await simpleQuestion({type: "input", message: "fingerprint"}),
-          passphase: !await simpleQuestion({type: "confirm", message: "Private key required Passworld?"}) ? undefined : await simpleQuestion({
-            type: "password",
-            mask: "*"
-          }),
-        })
-      }
-    };
-  } else if (target === "github") {
-    const { owner, repository, token, type } = await inquirer.prompt<{owner: string, repository: string, token?: string, type: "branch"|"release"}>([
       {
-        type: "input",
-        name: "owner"
-      },
-      {
-        type: "input",
-        name: "repository"
-      },
-      {
-        type: "password",
-        name: "Token",
-        mask: "*",
-      },
-      {
+        name: "authType",
         type: "list",
-        name: "type",
         choices: [
-          "branch",
-          "release"
+          {name: "Pre authentication key", value: "preAuthentication"},
+          {name: "User", value: "user"},
         ]
+      },
+      {
+        when: (answers) => answers["authType"] === "preAuthentication",
+        name: "PreAuthenticatedKey",
+        type: "input",
+        message: "Preauthenticed Key"
+      },
+      {
+        when: (answers) => answers["authType"] !== "preAuthentication",
+        name: "tenancy",
+        type: "input"
+      },
+      {
+        when: (answers) => answers["authType"] !== "preAuthentication",
+        name: "user",
+        type: "input"
+      },
+      {
+        when: (answers) => answers["authType"] !== "preAuthentication",
+        name: "fingerprint",
+        type: "input"
+      },
+      {
+        when: (answers) => answers["authType"] !== "preAuthentication",
+        name: "privateKey",
+        type: "input"
+      },
+      {
+        when: (answers) => answers["authType"] !== "preAuthentication",
+        name:  "passphase",
+        type: "confirm",
+        message: "Private key require password to decrypt?"
+      },
+      {
+        when: (answers) => answers["passphase"],
+        name:  "passphase",
+        type: "password",
+        mask: "*"
       }
     ]);
-    const gh = await Github.GithubManeger(owner, repository, token);
+    const { namespace, name, region } = ociPromps;
+    if (ociPromps["authType"] === "preAuthentication") {
+      return {
+        type: "oracleBucket", componentName,
+        authConfig: {
+          namespace, name, region,
+          auth: {
+            type: "preAuthentication",
+            PreAuthenticatedKey: ociPromps["PreAuthenticatedKey"],
+          }
+        }
+      };
+    }
+    const { fingerprint, privateKey, tenancy, user, passphase } = ociPromps;
     return {
-      type: "github",
-      owner,
-      repository,
-      ...(type === "branch" ? {
-        subType: "branch",
-        branch: ""
-      } : {
-        subType: "release",
-        tag: await simpleQuestion<string[]>({
-          type: "checkbox",
-          choices: (await gh.getRelease()).filter(({assets}) => assets.find(a => a.name.endsWith(".deb"))).map(({tag_name}) => tag_name),
-        }),
-      })
+      type: "oracleBucket", componentName,
+      authConfig: {
+        namespace, name, region,
+        auth: {
+          type: "user",
+          fingerprint, privateKey, tenancy, user, passphase
+        }
+      }
     };
-  } else if (target === "docker") {
+  } else if (srcType === "docker") {
     const basicConfig = await inquirer.prompt<{authConfirm: boolean, imageURI: string}>([
       {
         name: "imageURI",
@@ -267,7 +465,8 @@ async function createSource(): Promise<repositorySource> {
       {
         name: "authConfirm",
         type: "confirm",
-        message: "This registry or image required authentication?"
+        message: "This registry or image required authentication?",
+        default: false
       }
     ]);
     let auth: dockerRegistry.userAuth;
@@ -296,315 +495,21 @@ async function createSource(): Promise<repositorySource> {
     }
 
     const registry = new dockerRegistry.v2(basicConfig.imageURI, auth);
-    const tags = await simpleQuestion<string[]>({
+    const { tags } = await inquirer.prompt({
+      name: "tags",
       type: "checkbox",
       message: "Select tags or don't select any to go to the last 6 tags at sync time",
       choices: (await registry.getTags())
     });
 
     return {
-      type: "docker",
+      type: "docker", componentName,
       image: basicConfig.imageURI,
       auth,
       tags
     };
-  } else if (target === "mirror") {
-    const config = apt.parseSourceList(await simpleQuestion({
-      type: "editor",
-      message: "configFile"
-    })).filter(d => d.type === "packages");
-    if (config.length >= 0) return {type: "mirror", config};
-    console.log("Invalid sources");
   }
 
-  console.log("Try again");
+  console.log("Invalid select type!");
   return createSource();
-}
-
-async function deleteSource(sources: aptStreamConfig["repository"][string]["source"]) {
-  const selected = await simpleQuestion<number[]>({
-    type: "checkbox",
-    message: "Select sources to remove",
-    choices: sources.map(({type}, index) => ({name: type, value: index}))
-  });
-  return sources.filter((_, index) => !selected.includes(index));
-}
-
-async function manegerSource(config: aptStreamConfig, repositoryName: string): Promise<aptStreamConfig> {
-  if (config.repository[repositoryName].source.length <= 0) config.repository[repositoryName].source.push(await createSource());
-  const target = await simpleQuestion<"return"|"new"|"delete"|"deleteMe">({
-    type: "list",
-    message: "Select repository action",
-    choices: [
-      {name: "New source", value: "new"},
-      {name: "Delete sources", value: "delete"},
-      {name: "Delete this repository", value: "deleteMe"},
-      {name: "Return to menu", value: "return"},
-    ]
-  });
-
-  if (target !== "return") {
-    if (target === "new") config.repository[repositoryName].source.push(await createSource());
-    else if (target === "delete") config.repository[repositoryName].source = await deleteSource(config.repository[repositoryName].source);
-    else if (target === "deleteMe") {
-      if (await simpleQuestion<boolean>({
-        type: "confirm",
-        message: "Are you sure what you're doing, can this process be irreversible?"
-      })) {
-        const wait = ora("Deleting").start();
-        try {
-          const db = await databaseManegerSetup(config);
-          await Promise.all(config.repository[repositoryName].source.map(async ({id}) => db.deleteSource(id)));
-          delete config.repository[repositoryName];
-          await db.close();
-          wait.succeed(format("Repository (%O) deleted from config file!", repositoryName));
-        } catch (err) {
-          wait.fail(err?.message || String(err));
-        }
-        return config;
-      }
-      console.log("Repository delete aborted!");
-    }
-    return manegerSource(await prettyConfig(config), repositoryName);
-  }
-  return prettyConfig(config);
-}
-
-async function genGPG(config: aptStreamConfig): Promise<aptStreamConfig> {
-  if (config.gpgSign) console.warn("Replacing exists gpg keys");
-  const ask = await inquirer.prompt([
-    {
-      type: "input",
-      message: "Full name or nickname, example Google Inc.:",
-      name: "name",
-    },
-    {
-      type: "input",
-      message: "email, example: noreply@gmail.com:",
-      name: "email"
-    },
-    {
-      type: "password",
-      mask: "*",
-      message: "password to encrypt the gpg files, if you don't want to leave it blank",
-      name: "pass",
-      validate(input = "") {
-        if (input.length === 0) return true;
-        else if (input.length >= 8) return true;
-        return "Password must have more than 8 characters!";
-      },
-    },
-    {
-      type: "password",
-      mask: "*",
-      name: "passConfirm",
-      when: (answers) => answers.pass?.length > 0,
-      validate(input, answers) {
-        if (input === answers.pass) return true;
-        return "Invalid password, check is same!";
-      },
-    },
-    {
-      type: "confirm",
-      message: "Want to save keys locally?",
-      name: "confirmSaveGPG",
-    },
-    {
-      type: "input",
-      message: "Which folder do you save?",
-      name: "folderPath",
-      default: path.resolve(process.cwd(), "gpgKeys"),
-      when: (answers) => answers.confirmSaveGPG
-    }
-  ]);
-  return openpgp.generateKey({
-    rsaBits: 4096,
-    format: "armored",
-    type: "rsa",
-    passphrase: ask.pass,
-    userIDs: [{
-      comment: "Generated by apt-stream",
-      name: ask.name,
-      email: ask.email,
-    }],
-  }).then(async keys => {
-    config.gpgSign = {
-      authPassword: ask.pass,
-      private: {
-        content: keys.privateKey,
-      },
-      public: {
-        content: keys.publicKey,
-      }
-    };
-    if (ask.confirmSaveGPG) {
-      const folderPath = path.resolve(process.cwd(), ask.folderPath);
-      if (!(await extendsFS.exists(folderPath))) await fs.mkdir(folderPath, {recursive: true});
-      config.gpgSign.private.path = path.join(folderPath, "privateAptStream.gpg");
-      config.gpgSign.public.path = path.join(folderPath, "publicAptStream.gpg");
-    }
-    return config;
-  }).catch(err => {
-    console.error(err?.message || err);
-    return genGPG(config);
-  });
-}
-
-export default async function main(configPath: string, configOld?: aptStreamConfig) {
-  if (configOld) await save(configPath, configOld);
-  const localConfig = !configOld ? await config(configPath) : configOld;
-  if (Object.keys(localConfig.repository).length === 0) {
-    console.log("Init fist repository config!");
-    return createRepository(localConfig).then(d => main(configPath, d));
-  }
-  const target = await simpleQuestion<"new"|"serverManeger"|"edit"|"load"|"exit">({
-    type: "list",
-    message: "Select action",
-    choices: [
-      {name: "Edit server configs", value: "serverManeger"},
-      {name: "Create new Repository", value: "new"},
-      {name: "Edit repository", value: "edit"},
-      {name: "Sync repository", value: "load"},
-      {name: "Exit", value: "exit"}
-    ]
-  });
-  if (target !== "exit") {
-    if (target === "new") configOld = await createRepository(localConfig);
-    else if (target === "edit") {
-      const repoName = await simpleQuestion<string>({
-        type: "list",
-        message: "Select repository",
-        choices: Object.keys(localConfig.repository)
-      });
-      configOld = await manegerSource(localConfig, repoName);
-    } else if (target === "load") {
-      await save(configPath, localConfig);
-      console.log("Loading packages...");
-      let packageCount = 0;
-      const db = await databaseManegerSetup(localConfig);
-
-      for (const distName of Object.keys(localConfig.repository)) {
-        for (const source of localConfig.repository[distName].source) {
-          await db.registerSource(source, (err, control) => {
-            if (err) return console.error(err);
-            packageCount++;
-            console.log("%s -> %s %s/%s (%s)", distName, source.componentName, control.Package, control.Architecture, control.Version);
-          }).catch(console.error);
-        }
-      }
-
-      await db.close();
-      console.log("Synced added %s packages", packageCount);
-    } else if (target === "serverManeger") {
-      async function serverConfig(config: aptStreamConfig) {
-        const quest = await simpleQuestion<"gpg"|"setDB"|"setCluster"|"exit">({
-          name: "action",
-          type: "list",
-          choices: [
-            {name: "Generate gpg keys", value: "gpg"},
-            {name: "Set database config", value: "setDB"},
-            {name: "Set cluster forks", value: "setCluster"},
-            {name: "Return", value: "exit"}
-          ]
-        });
-        await save(configPath, config);
-        if (quest !== "exit") {
-          if (quest === "gpg") config = await genGPG(config);
-          else if (quest === "setCluster") {
-            config.serverConfig ??= {};
-            const cores = config.serverConfig.clusterCount ?? (cpus().length || 1);
-            config.serverConfig.clusterCount = Number(await simpleQuestion({
-              message: "Will fork rooms be created?",
-              type: "number",
-              default: cores,
-              validate(input) {
-                const n = Number(input);
-                if (n === 0 || (n >= 1 && n <= 256)) return true;
-                return "Invalid number allow 0 at 256";
-              },
-            }));
-          } else if (quest === "setDB") {
-            const setup = async () => {
-              const db = await simpleQuestion<"mongo"|"couch">({
-                message: "Choice Database:",
-                type: "list",
-                choices: [
-                  {name: "Mongo Database", value: "mongo"},
-                  {name: "Apache Couch Database", value: "couch"}
-                ]
-              });
-              if (db === "mongo") {
-                const prompts = await inquirer.prompt([
-                  {
-                    name: "uri",
-                    type: "input",
-                    async validate(input) {
-                      try {
-                        await (await (new MongoClient(input, {connectTimeoutMS: 5000, serverSelectionTimeoutMS: 5000})).connect()).close();
-                        return true;
-                      } catch (err) {
-                        return err?.message || String(err);
-                      }
-                    },
-                  },
-                  {
-                    name: "database",
-                    type: "input",
-                    default: "apt-stream"
-                  },
-                  {
-                    name: "collection",
-                    type: "input",
-                    default: "packages"
-                  },
-                ]);
-                config.database = {
-                  drive: "mongodb",
-                  url: prompts.uri,
-                  databaseName: prompts.database,
-                  collection: prompts.collection
-                };
-              } else if (db === "couch") {
-                const prompts = await inquirer.prompt([
-                  {
-                    name: "uri",
-                    type: "input",
-                    async validate(input) {
-                      try {
-                        const nanoClient = nano(input);
-                        if ((await nanoClient.session()).ok) return true;
-                        return "Not authenticated or invalid auth";
-                      } catch (err) {
-                        return err?.message || String(err);
-                      }
-                    },
-                  },
-                  {
-                    name: "database",
-                    type: "input",
-                    default: "aptStream",
-                  }
-                ]);
-                config.database = {
-                  drive: "couchdb",
-                  url: prompts.uri,
-                  databaseName: prompts.database
-                };
-              } else {
-                console.info("Invalid database!");
-                return setup();
-              }
-            }
-            await setup();
-          }
-          return serverConfig(config);
-        }
-        return config;
-      }
-      configOld = await serverConfig(localConfig);
-    }
-    return main(configPath, configOld);
-  }
-  console.log("Saving...");
-  await save(configPath, localConfig);
 }
