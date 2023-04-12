@@ -12,7 +12,7 @@ inquirer.registerPrompt("file-tree-selection", inquirerFileTreeSelection);
 
 export default async function main(configManeger: packageManeger) {
   while(true) {
-    const action = (await inquirer.prompt<{initAction: "serverEdit"|"newRepo"|"editRepo"|"syncRepo"|"exit"}>({
+    const action = (await inquirer.prompt<{initAction: "serverEdit"|"newRepo"|"del"|"editRepo"|"syncRepo"|"exit"}>({
       name: "initAction",
       type: "list",
       message: "Select action:",
@@ -24,6 +24,10 @@ export default async function main(configManeger: packageManeger) {
         {
           name: "Create new repository",
           value: "newRepo"
+        },
+        {
+          name: "Delete repository",
+          value: "del"
         },
         {
           name: "Synchronize packages from repositories",
@@ -40,14 +44,19 @@ export default async function main(configManeger: packageManeger) {
       ]
     })).initAction;
     if (action === "exit") break;
-    else if (action === "syncRepo") await configManeger.syncRepositorys((err, db) => err?null:console.log("Added %s: %s/%s (%S)", db.repositoryID, db.controlFile.Package, db.controlFile.Architecture, db.controlFile.Version));
-    else if (action === "newRepo") {
-      await editRepository(configManeger.createRepository((await inquirer.prompt({
+    else if (action === "syncRepo") {
+      console.log("Starting...");
+      await configManeger.syncRepositorys((err, db) => err?console.error(err?.message || err):console.log("Added %s: %s/%s (%s)", db.repositoryID, db.controlFile.Package, db.controlFile.Architecture, db.controlFile.Version));
+      console.log("End!");
+    } else if (action === "newRepo") {
+      const repoName = (await inquirer.prompt({
         name: "repoName",
         message: "Repository name:",
         type: "input",
         validate: (name) => configManeger.hasSource(name.trim()) ? "Type other repository name, this are exist's" : true,
-      })).repoName), configManeger);
+      })).repoName.trim();
+      if (repoName) await editRepository(configManeger.createRepository(repoName), configManeger);
+      else console.log("The repository was not created, cancelling!");
     } else if (action === "editRepo") {
       const repo = configManeger.getRepositorys();
       const repoSelected = (await inquirer.prompt({
@@ -63,6 +72,24 @@ export default async function main(configManeger: packageManeger) {
         ],
       })).repo;
       if (repoSelected !== "exit") await editRepository(configManeger.getRepository(repoSelected), configManeger);
+    } else if (action === "del") {
+      const repo = configManeger.getRepositorys();
+      const repoSelected = (await inquirer.prompt({
+        name: "repo",
+        message: "Selecte repository:",
+        type: "list",
+        choices: [
+          {
+            name: "Cancel",
+            value: "exit"
+          },
+          ...(repo.map(d => d.repositoryName))
+        ],
+      })).repo;
+      if (repoSelected !== "exit") {
+        if (configManeger.deleteRepository(repoSelected)) console.log("Repository deleted");
+        else console.error("Fail to delete repository!");
+      }
     }
     await configManeger.saveConfig().catch(() => {});
   }
@@ -91,13 +118,79 @@ async function editRepository(repo: Repository, configManeger: packageManeger) {
           value: "delAll"
         },
         {
+          name: "Set repository codename",
+          value: "setCodename"
+        },
+        {
+          name: "Set repository description",
+          value: "setDescription"
+        },
+        {
+          name: "Set repository label",
+          value: "setLabel"
+        },
+        {
+          name: "Set repository origin",
+          value: "setOrigin"
+        },
+        {
+          name: "Set repository suite",
+          value: "setSuite"
+        },
+        {
           name: "Return",
           value: "exit"
-        }
+        },
       ]
     })).action;
+
     if (action === "exit") break;
-    else if (action === "delAll") {
+    else if (action === "setCodename") {
+      const input = (await inquirer.prompt({
+        name: "value",
+        type: "input",
+        message: "What is new Codename?"
+      })).value;
+      repo.setCodename(input);
+    } else if (action === "setDescription") {
+      const input = (await inquirer.prompt({
+        name: "value",
+        type: "input",
+        message: "Set description in one single line:"
+      })).value;
+      repo.setDescription(input);
+    } else if (action === "setLabel") {
+      const input = (await inquirer.prompt({
+        name: "value",
+        type: "input",
+        message: "Set label:"
+      })).value;
+      repo.setLabel(input);
+    } else if (action === "setOrigin") {
+      const input = (await inquirer.prompt([
+        {
+          when: () => !!repo.getOrigin(),
+          name: "confirm",
+          message: "Are you sure you want to change Origin?",
+          type: "confirm",
+          default: false
+        },
+        {
+          when: (ask) => !repo.getOrigin() || ask["confirm"],
+          name: "value",
+          type: "input",
+          message: "What is Origin name?"
+        }
+      ])).value;
+      if (!input) console.log("Canceled set origin"); else repo.setOrigin(input);
+    } else if (action === "setSuite") {
+      const input = (await inquirer.prompt({
+        name: "value",
+        type: "input",
+        message: "What is Suite name?"
+      })).value;
+      repo.setSuite(input);
+    } else if (action === "delAll") {
       exitShowSync = true;
       repo.clear();
     } else if (action === "del") {
@@ -211,16 +304,25 @@ async function createSource(): Promise<repositorySource> {
   } else if (srcType === "github") {
     const promps = await inquirer.prompt([
       {
+        name: "token",
+        type: "input",
+        message: "Github token to private repositorys (it is not necessary if it is public):",
+        validate(input: string) {
+          if (input.length > 0) if (!(input.startsWith("ghp_"))) return "Invalid token, if old token set manualy in Config file!";
+          return true;
+        },
+      },
+      {
         name: "owner",
         type: "input",
         message: "Repository owner:",
-        async validate(input) {
+        async validate(input, ask) {
           try {
             const apiReq = new URL(path.posix.join("/users", path.posix.resolve("/", input)), "https://api.github.com");
-            await coreHTTP.jsonRequestBody(apiReq);
+            await coreHTTP.jsonRequestBody(apiReq, {headers: ask.token ? {Authorization: `token ${ask.token}`}:{}});
             return true;
           } catch (err) {
-            return err?.message || String(err);
+            return err?.body?.message || err?.message || String(err);
           }
         }
       },
@@ -230,7 +332,7 @@ async function createSource(): Promise<repositorySource> {
         message: "Select repository:",
         async choices(answers) {
           const apiReq = new URL(path.posix.join("/users", answers["owner"], "repos"), "https://api.github.com");
-          return (await coreHTTP.jsonRequestBody<{name: string}[]>(apiReq)).map(({name}) => name);
+          return (await coreHTTP.jsonRequestBody<{name: string}[]>(apiReq, {headers: answers.token ? {Authorization: `token ${answers.token}`}:{}})).map(({name}) => name);
         },
       },
       {
@@ -244,14 +346,15 @@ async function createSource(): Promise<repositorySource> {
       }
     ]);
 
-    const { owner, repository } = promps;
+    const { owner, repository, token } = promps;
     if (promps["subType"] === "Branch") {
       return {
-        type: "github", subType: "branch", componentName,
-        owner, repository,
+        type: "github", subType: "branch", componentName, enableUpload: false,
+        owner, repository, token,
         branch: (await inquirer.prompt({
           name: "branch",
           type: "list",
+          message: "Select the branch:",
           async choices() {
             const apiReq = new URL(path.posix.join("/repos", owner, repository, "branches"), "https://api.github.com");
             return (await coreHTTP.jsonRequestBody<{name: string}[]>(apiReq)).map(({name}) => name);
@@ -259,17 +362,28 @@ async function createSource(): Promise<repositorySource> {
         })).branch,
       };
     }
-    return {
-      type: "github", subType: "release", componentName,
-      owner, repository,
-      tag: (await inquirer.prompt({
-        name: "tags",
+    const { tag, enableUpload } = await inquirer.prompt([
+      {
+        when: () => !!token,
+        type: "confirm",
+        name: "enableUpload",
+        message: "Enable support to upload files to Github Release?",
+        default: false,
+      },
+      {
+        name: "tag",
         type: "checkbox",
+        message: "Select tags:",
         async choices() {
           const apiReq = new URL(path.posix.join("/repos", owner, repository, "releases"), "https://api.github.com");
           return (await coreHTTP.jsonRequestBody<{tag_name: string}[]>(apiReq)).map(({tag_name}) => tag_name);
         }
-      })).tags
+      },
+    ]);
+    return {
+      type: "github", subType: "release", componentName, enableUpload,
+      owner, repository, token,
+      tag,
     }
   } else if (srcType === "googleDriver") {
     const clientPromp = await inquirer.prompt([
@@ -282,6 +396,12 @@ async function createSource(): Promise<repositorySource> {
         type: "input",
         name: "id",
         message: "Google oAuth Client ID:"
+      },
+      {
+        type: "confirm",
+        name: "enableUpload",
+        message: "Enable support to upload files to Google driver?",
+        default: false,
       },
       {
         name: "listFiles",
@@ -318,7 +438,7 @@ async function createSource(): Promise<repositorySource> {
     }
 
     return {
-      type: "googleDriver", componentName,
+      type: "googleDriver", componentName, enableUpload: clientPromp["enableUpload"],
       clientSecret: clientPromp["secret"],
       clientId: clientPromp["id"],
       clientToken,
@@ -421,12 +541,18 @@ async function createSource(): Promise<repositorySource> {
         name:  "passphase",
         type: "password",
         mask: "*"
+      },
+      {
+        type: "confirm",
+        name: "enableUpload",
+        message: "Enable support to upload files?",
+        default: false,
       }
     ]);
-    const { namespace, name, region } = ociPromps;
+    const { namespace, name, region, enableUpload } = ociPromps;
     if (ociPromps["authType"] === "preAuthentication") {
       return {
-        type: "oracleBucket", componentName,
+        type: "oracleBucket", componentName, enableUpload,
         authConfig: {
           namespace, name, region,
           auth: {
@@ -438,7 +564,7 @@ async function createSource(): Promise<repositorySource> {
     }
     const { fingerprint, privateKey, tenancy, user, passphase } = ociPromps;
     return {
-      type: "oracleBucket", componentName,
+      type: "oracleBucket", componentName, enableUpload,
       authConfig: {
         namespace, name, region,
         auth: {

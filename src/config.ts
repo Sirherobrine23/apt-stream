@@ -1,10 +1,12 @@
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { extendsFS } from "@sirherobrine23/extends";
+import { Github } from "@sirherobrine23/http";
 import { apt } from "@sirherobrine23/debian";
 import * as dockerRegistry from "@sirherobrine23/docker-registry";
 import oldFs, { promises as fs } from "node:fs";
 import openpgp from "openpgp";
 import crypto from "node:crypto";
+import stream from "node:stream";
 import path from "node:path";
 import yaml from "yaml";
 
@@ -13,9 +15,15 @@ export type repositorySource = {
    * Dist component
    * @default main
    */
-  componentName?: string,
+  componentName?: string;
+
+  /**
+   * The source is available for file upload.
+   */
+  enableUpload?: boolean;
 } & ({
   type: "http",
+  enableUpload?: false;
   url: string,
   auth?: {
     header?: {[key: string]: string},
@@ -23,6 +31,7 @@ export type repositorySource = {
   }
 }|{
   type: "mirror",
+  enableUpload?: false;
   config: apt.sourceList
 }|{
   type: "github",
@@ -45,6 +54,7 @@ export type repositorySource = {
   tag?: string[],
 }|{
   subType: "branch",
+  enableUpload?: false;
   branch: string,
 })|{
   type: "googleDriver",
@@ -119,10 +129,6 @@ export class Repository extends Map<string, repositorySource> {
   setLabel(value: string) {this.#Label = value;}
   getLabel() {return this.#Label}
 
-  getAllRepositorys(): ({repositoryID: string} & repositorySource)[] {
-    return Array.from(this.keys()).map(key => ({repositoryID: key, ...(this.get(key))}));
-  }
-
   constructor(src?: repositorySources) {
     super();
     if (src) {
@@ -167,9 +173,11 @@ export class Repository extends Map<string, repositorySource> {
         if (!(Object.keys(repo.auth?.query||{}).length) && repo.auth?.query) delete repo.auth.query;
       }
       if (!(Object.keys(repo.auth||{}).length) && repo.auth) delete repo.auth;
+      repo.enableUpload = false;
     } else if (repo.type === "mirror") {
       if (!repo.config) throw new Error("Require Mirror sources");
       else if (!((repo.config = repo.config.filter(at => at.type === "packages" && at.distname?.trim?.() && at.src?.trim?.())).length)) throw new Error("To mirror the repository you only need a source");
+      repo.enableUpload = false;
     } else if (repo.type === "github") {
       if (!(repo.owner && repo.repository)) throw new Error("github Sources require owner and repository");
       if (!repo.token) delete repo.token;
@@ -177,9 +185,10 @@ export class Repository extends Map<string, repositorySource> {
         if (!(repo.tag?.length)) delete repo.tag;
       } else if (repo.subType === "branch") {
         if (!(repo.branch)) delete repo.branch;
+        repo.enableUpload = false;
       } else throw new Error("invalid github source");
     } else if (repo.type === "googleDriver") {
-      if (!(repo.clientId && repo.clientSecret && (typeof repo.clientToken?.access_token === "string" && repo.clientToken?.access_token.trim().length > 0))) throw new Error("Invalid settings to Google oAuth");
+      if (!(repo.clientId && repo.clientSecret && (typeof repo.clientToken?.access_token === "string" && repo.clientToken.access_token.trim().length > 0))) throw new Error("Invalid settings to Google oAuth");
       if (!(repo.gIDs?.length)) delete repo.gIDs;
     } else if (repo.type === "oracleBucket") {
       if (!(repo.authConfig && repo.authConfig.auth)) throw new Error("Required auth config to Oracle bucket");
@@ -197,6 +206,7 @@ export class Repository extends Map<string, repositorySource> {
       if (!(repo.tags?.length)) delete repo.tags;
     } else throw new Error("Invalid source type");
     repo.componentName ||= "main";
+    repo.enableUpload ??= false;
     super.set(key, repo);
     return this;
   }
@@ -210,6 +220,62 @@ export class Repository extends Map<string, repositorySource> {
   get(repoID: string) {
     if (!(this.has(repoID))) throw new Error("Repository not exists");
     return super.get(repoID);
+  }
+
+  /** Get all repository sources with repository ID */
+  getAllRepositorys(): ({repositoryID: string} & repositorySource)[] {
+    return Array.from(this.keys()).map(key => ({repositoryID: key, ...(this.get(key))}));
+  }
+
+  /**
+   * Upload debian file to repository source if avaible
+   *
+   * @param repositoryID - Repository ID
+   * @returns
+   */
+  async uploadFile(repositoryID: string) {
+    const repo = this.get(repositoryID);
+    if (!repo.enableUpload) throw new Error("Repository not allow or not support to upload files!");
+    if (repo.type === "github") {
+      if (!repo.token) throw new Error("Cannot create upload file to Github Release, required Token to upload files!");
+      const { owner, repository, token } = repo;
+      const gh = await Github.GithubManeger(owner, repository, token);
+      return {
+        async githubUpload(filename: string, fileSize: number, tagName?: string): Promise<stream.Writable> {
+          if (!tagName) tagName = (await gh.getRelease(true)).tag_name;
+          const str = new stream.PassThrough();
+          (await gh.releaseManeger({tagName})).uploadFile({name: filename, content: {stream: str, fileSize}});
+          return str;
+        }
+      };
+    } else if (repo.type === "googleDriver") {
+      const { clientId: clientID, clientSecret, clientToken } = repo;
+      const gdrive = await googleDriver.GoogleDriver({clientID, clientSecret, token: clientToken});
+      return {
+        async gdriveUpload(filename: string, folderId?: string): Promise<stream.Writable> {
+          const str = new stream.PassThrough();
+          gdrive.uploadFile(filename, str, folderId).then(() => str.end());
+          return str;
+        }
+      };
+    } else if (repo.type === "oracleBucket") {
+      const oci = await oracleBucket.oracleBucket(repo.authConfig);
+      return {
+        async ociUpload(filename: string): Promise<stream.Writable> {
+          const str = new stream.PassThrough();
+          oci.uploadFile(filename, str);
+          return str;
+        }
+      };
+    } else if (repo.type === "docker") {
+      return {
+        async dockerUpload() {
+          throw new Error("Not implemented docker")
+        }
+      };
+    }
+
+    throw new Error("Not implemented");
   }
 
   toJSON(): repositorySources {

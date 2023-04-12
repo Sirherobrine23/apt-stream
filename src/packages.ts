@@ -4,6 +4,7 @@ import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { extendsCrypto, extendsFS } from "@sirherobrine23/extends";
 import { apt, dpkg } from "@sirherobrine23/debian";
 import { tmpdir } from "node:os";
+import { format } from "node:util";
 import * as dockerRegistry from "@sirherobrine23/docker-registry";
 import oldFs, { promises as fs } from "node:fs";
 import coreHTTP, { Github } from "@sirherobrine23/http";
@@ -47,6 +48,10 @@ export class packageManeger extends aptStreamConfig {
     return this.#collection.find(query).toArray();
   }
 
+  async packagesCount() {
+    return (await this.#collection.stats()).count;
+  }
+
   async createPackage(repositoryName: string, componentName: string, Arch: string, appRoot: string = "", options?: {compress?: "gz"|"xz", callback: (str: stream.Readable) => void}) {
     const repositorys = this.getRepository(repositoryName).getAllRepositorys().filter(pkg => pkg.componentName === componentName);
     if (!repositorys.length) throw new Error("Repository or Component name not exists!");
@@ -59,11 +64,13 @@ export class packageManeger extends aptStreamConfig {
       sha1: hash.sha1,
       md5: hash.md5,
     }));
+    if (typeof options?.callback === "function") (async () => options.callback(str.pipe(streamCompress(options.compress === "gz" ? "gzip" : options.compress === "xz" ? "xz" : "passThrough"))))().catch(err => str.emit("error", err));
+    const gg = Promise.all([getHash(), getHash("gz"), getHash("xz")]);
     (async () => {
       let breakLine = false;
       for (const repo of repositorys) {
         const componentName = repo.componentName || "main";
-        for (const { controlFile: pkg } of await this.pkgQuery({repositoryID: repo.repositoryID, "controlFile.Architecture": Arch})) {
+        for (const { controlFile: pkg } of await this.pkgQuery({repositoryID: repo.repositoryID, "controlFile.Architecture": Arch}).then(res => Arch === "all" ? res : this.pkgQuery({repositoryID: repo.repositoryID, "controlFile.Architecture": "all"}).then(res2 => res2.concat(res)))) {
           let pkgHash: string;
           if (!(pkgHash = pkg.SHA1)) continue;
           if (breakLine) str.push("\n\n"); else breakLine = true;
@@ -75,8 +82,7 @@ export class packageManeger extends aptStreamConfig {
       }
       str.push(null);
     })().catch(err => str.emit("error", err));
-    if (typeof options?.callback === "function") (async () => options.callback(str.pipe(streamCompress(options.compress === "gz" ? "gzip" : options.compress === "xz" ? "xz" : "passThrough"))))().catch(err => str.emit("error", err));
-    return Promise.all([getHash(), getHash("gz"), getHash("xz")]);
+    return gg;
   }
 
   async createRelease(repositoryName: string, appRoot: string) {
@@ -98,7 +104,7 @@ export class packageManeger extends aptStreamConfig {
 
     const toJSON = () => {
       if ((!Architectures.length) && (!Components.length)) throw new Error("Invalid config repository or not loaded to database!");
-      return {
+      const data = {
         Date: releaseDate,
         acquireByHash: false,
         Codename: source.getCodename(),
@@ -113,6 +119,8 @@ export class packageManeger extends aptStreamConfig {
         SHA256: Array.from(SHA256.values()),
         SHA512: Array.from(SHA512.values()),
       };
+      if (!data.Architectures.length) throw new Error("Require one packages loaded to database!");
+      return data;
     }
 
     const toString = () => {
@@ -227,7 +235,15 @@ export class packageManeger extends aptStreamConfig {
   }
 
   async addPackage(repositoryID: string, control: dpkg.debianControl, restore: any): Promise<dbStorage> {
-    if (Boolean(await this.#collection.findOne({repositoryID, controlFile: {Package: control.Package, Version: control.Version, Architecture: control.Architecture}}))) throw new Error("Package are exists in database");
+    if (Boolean(await this.#collection.findOne({
+      repositoryID,
+      "controlFile.Package": control.Package,
+      "controlFile.Version": control.Version,
+      "controlFile.Architecture": control.Architecture
+    }))) {
+      const { Package, Architecture, Version } = control;
+      throw new Error(format("%s -> %s/%s (%s) are exists in database", repositoryID, Package, Architecture, Version));
+    }
     await this.#collection.insertOne({
       repositoryID,
       restoreFile: restore,
@@ -240,13 +256,15 @@ export class packageManeger extends aptStreamConfig {
     };
   }
 
-  async syncRepositorys(callback?: (error?: any, control?: dbStorage) => void) {
+  async syncRepositorys(callback?: (error?: any, dbStr?: dbStorage) => void) {
     const sources = this.getRepositorys().map(({repositoryManeger}) => repositoryManeger.getAllRepositorys()).flat(2);
-    await this.#collection.deleteMany({repositoryID: (await this.#collection.distinct("repositoryID")).filter(key => !sources.find(d => d.repositoryID === key))})
+    const toDelete = (await this.#collection.distinct("repositoryID")).filter(key => !sources.find(d => d.repositoryID === key));
+    if (toDelete.length > 0) await this.#collection.deleteMany({repositoryID: toDelete});
     for (const repo of sources) await this.registerSource(repo.repositoryID, repo, callback);
+    return toDelete;
   }
 
-  async registerSource(repositoryID: string, target: repositorySource, callback?: (error?: any, control?: dbStorage) => void) {
+  async registerSource(repositoryID: string, target: repositorySource, callback?: (error?: any, dbStr?: dbStorage) => void) {
     callback ??= (_void1, _void2) => {};
     if (target.type === "http") {
       try {
@@ -284,7 +302,7 @@ export class packageManeger extends aptStreamConfig {
       const gh = await Github.GithubManeger(owner, repository, token);
       if (target.subType === "branch") {
         const { branch = (await gh.branchList()).at(0)?.name ?? "main" } = target;
-        for (const { path: filePath } of (await gh.trees(branch)).tree.filter(file => file.type === "tree" ? false : file.path.endsWith(".deb"))) {
+        for (const { path: filePath } of (await gh.trees(branch)).tree.filter(file => file.type === "tree" ? false : (file.size > 10) && file.path.endsWith(".deb"))) {
           try {
             const rawURL = new URL(path.posix.join(owner, repository, branch, filePath), "https://raw.githubusercontent.com");
             const control = await dpkg.parsePackage(await coreHTTP.streamRequest(rawURL, {headers: token ? {Authorization: `token ${token}`} : {}}));

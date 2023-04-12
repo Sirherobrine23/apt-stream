@@ -33,12 +33,12 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
     type: "string",
     alias: "d",
     description: "database url"
-  }).option("disable-auto-sync", {
+  }).option("auto-sync", {
     type: "boolean",
     boolean: true,
     alias: "z",
     default: false,
-    description: "Disable backgroud sync packages"
+    description: "Enable backgroud sync packages"
   }), async options => {
   const pkg = await packageManeger(options.config);
   if (!!options.cluster && options.cluster > 0) pkg.setClusterForks(options.cluster);
@@ -47,6 +47,17 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
   if (!!options.db) pkg.setDatabse(options.db);
   let forks = pkg.getClusterForks();
   if (cluster.isPrimary) {
+    if (!!(options.autoSync ?? options["auto-sync"])) (async () => {
+      while (true) {
+        console.info("Initing package sync!");
+        await pkg.syncRepositorys((err, {repositoryID, controlFile: { Package, Architecture, Version }}) => err ? null : console.log("Sync/Add: %s -> %s %s/%s (%s)", repositoryID, Package, Architecture, Version));
+        console.log("Next sync after 30 Minutes");
+        await new Promise(done => setTimeout(done, 1800000));
+      }
+    })().catch(err => {
+      console.info("Auto sync packages disabled!");
+      console.error(err);
+    });
     if (forks > 0) {
       const forkProcess = async (count = 0): Promise<number> => new Promise((done, reject) => {
         const fk = cluster.fork();
@@ -62,18 +73,8 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
         });
       });
       for (let i = 0; i < forks; i++) await forkProcess().then(id => console.info("Cluster %s is online", id));
+      return
     }
-    if (!(options.disableAutoSync ?? options["disable-auto-sync"])) (async () => {
-      while (true) {
-        console.info("Initing package sync!");
-        await pkg.syncRepositorys(() => {});
-        console.log("Next sync after 30 Minutes");
-        await new Promise(done => setTimeout(done, 1800000));
-      }
-    })().catch(err => {
-      console.info("Auto sync packages disabled!");
-      console.error(err);
-    });
   }
   return aptServer(pkg);
 }).command(["maneger", "m", "$0"], "maneger packages in database", yargs => {
