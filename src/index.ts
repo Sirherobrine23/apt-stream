@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 import "./log.js";
+import path from "node:path";
 import yargs from "yargs";
 import cluster from "node:cluster";
 import aptServer from "./aptServer.js";
 import configManeger from "./configManeger.js";
 import packageManeger from "./packages.js";
+import oldFs, { promises as fs } from "node:fs";
 import { aptStreamConfig } from "./config.js";
+import { extendsFS } from "@sirherobrine23/extends";
+import { pipeline } from "node:stream/promises";
+import { dpkg } from "@sirherobrine23/debian";
 
 yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null).version(false).help(true).strictCommands().demandCommand().alias("h", "help").command(["server", "serve", "s"], "Run http Server", yargs => yargs.option("config", {
     string: true,
@@ -77,20 +82,62 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
     }
   }
   return aptServer(pkg);
-}).command(["maneger", "m", "$0"], "maneger packages in database", yargs => {
-  return yargs.option("config", {
-    string: true,
-    alias: "c",
-    type: "string",
-    description: "Config file path",
-    default: "aptStream.yml",
-  }).command(["$0"], "Maneger config", async options => configManeger(await packageManeger(options.parseSync().config))).command(["print", "p"], "Print config to target default is json", yargs => yargs.option("outputType", {
-    description: "target output file, targets ended with '64' is base64 string or 'hex' to hexadecimal",
-    default: "json",
-    alias: "o",
-    choices: [
-      "yaml", "yml", "yaml64", "yml64", "yamlhex", "ymlhex",
-      "json", "json64", "jsonhex",
-    ],
-  }), async (options) => console.log(((new aptStreamConfig(options.config)).toString(options.outputType.endsWith("64") ? "base64": options.outputType.endsWith("hex") ? "hex" : "utf8", options.outputType.startsWith("json") ? "json" : "yaml"))));
+}).command(["maneger", "m", "$0"], "maneger packages in database", yargs => yargs.option("config", {
+  string: true,
+  alias: "c",
+  type: "string",
+  description: "Config file path",
+  default: "aptStream.yml",
+}).command(["print", "p"], "Print config to target default is json", yargs => yargs.option("outputType", {
+  description: "target output file, targets ended with '64' is base64 string or 'hex' to hexadecimal",
+  default: "json",
+  alias: "o",
+  choices: [
+    "yaml", "yml", "yaml64", "yml64", "yamlhex", "ymlhex",
+    "json", "json64", "jsonhex",
+  ],
+}), async (options) => console.log(((new aptStreamConfig(options.config)).toString(options.outputType.endsWith("64") ? "base64": options.outputType.endsWith("hex") ? "hex" : "utf8", options.outputType.startsWith("json") ? "json" : "yaml")))).command(["$0"], "Maneger config", async options => {
+  if (!process.stdin.isTTY) throw new Error("Run with TTY to maneger config!");
+  return configManeger(options.parseSync().config);
+})).command(["pack", "pack-deb", "create", "c"], "Create package", yargs => yargs.option("config", {
+  string: true,
+  alias: "c",
+  type: "string",
+  description: "Config file path",
+  default: "aptStream.yml",
+}).option("package-path", {
+  type: "string",
+  string: true,
+  alias: "s",
+  default: process.cwd(),
+  description: "Debian package source",
+}).option("output", {
+  type: "string",
+  string: true,
+  alias: "o",
+}).option("compress", {
+  type: "string",
+  string: true,
+  description: "Data compress file",
+  default: "gzip",
+  choices: [
+    "gzip",
+    "passThrough",
+    "xz"
+  ]
+}), async options => {
+  let debianConfig: string;
+  if (!(await extendsFS.exists(debianConfig = path.resolve(process.cwd(), options.packagePath, "DEBIAN"))||await extendsFS.exists(debianConfig = path.resolve(process.cwd(), options.packagePath, "debian")))) throw new Error("Create valid package Structure!");
+  if (!(await extendsFS.exists(path.join(debianConfig, "control")))) throw new Error("Require control file");
+  const control = dpkg.parseControl(await fs.readFile(path.join(debianConfig, "control")));
+  if (!options.output) options.output = path.join(process.cwd(), `${control.Package}_${control.Architecture}_${control.Version}.deb`); else options.output = path.resolve(process.cwd(), options.output);
+  console.log("Creating debian package");
+  await pipeline(dpkg.createPackage({
+    control,
+    dataFolder: path.resolve(debianConfig, ".."),
+    compress: {
+      data: options.compress as any||"gzip"
+    }
+  }), oldFs.createWriteStream(options.output));
+  console.log("Saved in %O", options.output);
 }).parseAsync();

@@ -1,5 +1,5 @@
-import { Repository, repositorySource } from "./config.js";
-import { packageManeger } from "./packages.js";
+import { Repository, aptStreamConfig, repositorySource } from "./config.js";
+import connectDb, { packageManeger } from "./packages.js";
 import { googleDriver } from "@sirherobrine23/cloud";
 import { readFile } from "fs/promises";
 import { apt } from "@sirherobrine23/debian";
@@ -8,9 +8,13 @@ import * as dockerRegistry from "@sirherobrine23/docker-registry";
 import coreHTTP from "@sirherobrine23/http";
 import inquirer from "inquirer";
 import path from "node:path";
+import { MongoClient } from "mongodb";
 inquirer.registerPrompt("file-tree-selection", inquirerFileTreeSelection);
 
-export default async function main(configManeger: packageManeger) {
+export default async function main(configOrigin: string) {
+  const config = new aptStreamConfig(configOrigin);
+  if (!config.databaseAvaible()) await setDatabse(config);
+  const configManeger = await connectDb(config);
   while(true) {
     const action = (await inquirer.prompt<{initAction: "serverEdit"|"newRepo"|"del"|"editRepo"|"syncRepo"|"exit"}>({
       name: "initAction",
@@ -95,6 +99,25 @@ export default async function main(configManeger: packageManeger) {
   }
 
   return configManeger.close().then(async () => configManeger.saveConfig());
+}
+
+async function setDatabse(repo: aptStreamConfig) {
+  const promps = await inquirer.prompt([
+    {
+      name: "url",
+      type: "input",
+      message: "Mongodb URL:",
+      async validate(input) {
+        try {
+          await (await (new MongoClient(input)).connect()).close(true);
+          return true;
+        } catch (err) {
+          return err?.message || err;
+        }
+      },
+    },
+  ]);
+  repo.setDatabse(promps.url);
 }
 
 async function editRepository(repo: Repository, configManeger: packageManeger) {
@@ -208,7 +231,12 @@ async function editRepository(repo: Repository, configManeger: packageManeger) {
       exitShowSync = true;
       sel.forEach(id => repo.delete(id));
     } else if (action === "add") {
-      repo.set(configManeger.createRepositoryID(), await createSource());
+      const root = async () => createSource().catch(err => {
+        console.error(err);
+        console.log("Try again");
+        return createSource();
+      });
+      repo.set(configManeger.createRepositoryID(), await root());
     }
   }
   if (exitShowSync) console.info("Sync packages!");
@@ -596,6 +624,7 @@ async function createSource(): Promise<repositorySource> {
       }
     ]);
     let auth: dockerRegistry.userAuth;
+    let enableUpload: boolean = false;
     if (basicConfig.authConfirm) {
       const authPrompts = await inquirer.prompt([
         {
@@ -613,26 +642,23 @@ async function createSource(): Promise<repositorySource> {
           mask: "*",
           message: "Password or Token:"
         },
+        {
+          name: "enableUpload",
+          type: "confirm",
+          message: "Allow publish packages in Docker registry?"
+        }
       ]);
+      enableUpload = authPrompts["enableUpload"];
       auth = {
         username: authPrompts.user,
         password: authPrompts.pass
       };
     }
 
-    const registry = new dockerRegistry.v2(basicConfig.imageURI, auth);
-    const { tags } = await inquirer.prompt({
-      name: "tags",
-      type: "checkbox",
-      message: "Select tags or don't select any to go to the last 6 tags at sync time",
-      choices: (await registry.getTags())
-    });
-
     return {
-      type: "docker", componentName,
+      type: "docker", componentName, enableUpload,
       image: basicConfig.imageURI,
-      auth,
-      tags
+      auth
     };
   }
 

@@ -20,7 +20,7 @@ export interface dbStorage {
   controlFile: dpkg.debianControl;
 }
 
-export default async function main(initConfig: string|configJSON) {
+export default async function main(initConfig: string|configJSON|aptStreamConfig) {
   return new Promise<packageManeger>((done, reject) => {
     const pkg = new packageManeger(initConfig, (err) => {
       if (err) return reject(err);
@@ -32,7 +32,7 @@ export default async function main(initConfig: string|configJSON) {
 export class packageManeger extends aptStreamConfig {
   #collection: mongoDB.Collection<dbStorage>;
   async close() {}
-  constructor(initConfig: string|configJSON, connectionCallback?: (err?: any) => void) {
+  constructor(initConfig: string|configJSON|aptStreamConfig, connectionCallback?: (err?: any) => void) {
     connectionCallback ||= (err) => {if(err) process.emit("warning", err);}
     super(initConfig);
     (async () => {

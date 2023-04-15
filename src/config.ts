@@ -340,25 +340,38 @@ export class aptStreamConfig {
     await fs.writeFile((configPath||this.#configPath), this.toString("utf8", type));
   }
 
-  constructor(config?: string|configJSON) {
+  constructor(config?: string|configJSON|aptStreamConfig) {
     if (config) {
       let nodeConfig: configJSON;
+      if (config instanceof aptStreamConfig) {
+        this.#configPath = config.#configPath;
+        config = config.toJSON();
+      }
       if (typeof config === "string") {
         let indexofEncoding: number;
-        if (path.isAbsolute(path.resolve(process.cwd(), config)) && oldFs.existsSync(path.resolve(process.cwd(), config))) config = oldFs.readFileSync((this.#configPath = path.resolve(process.cwd(), config)), "utf8");
-        else if ((indexofEncoding = config.indexOf(":")) !== -1) config = Buffer.from(config.slice(indexofEncoding+1).trim(), config.slice(0, indexofEncoding) as BufferEncoding).toString("utf8");
-        try {
-          nodeConfig = JSON.parse(config as string);
-        } catch {
+        if (path.isAbsolute(path.resolve(process.cwd(), config))) {
+          if (oldFs.existsSync(path.resolve(process.cwd(), config))) config = oldFs.readFileSync((this.#configPath = path.resolve(process.cwd(), config)), "utf8")
+          else {
+            this.#configPath = path.resolve(process.cwd(), config);
+            config = undefined;
+          }
+        } else if ((["hex:", "base64:", "base64url:"]).find(rel => config.toString().startsWith(rel))) config = Buffer.from(config.slice(indexofEncoding+1).trim(), config.slice(0, indexofEncoding) as BufferEncoding).toString("utf8");
+        else config = undefined;
+        if (!!config) {
           try {
-            nodeConfig = yaml.parse(config as string);
+            nodeConfig = JSON.parse(config as string);
           } catch {
-            throw new Error("Invalid config, not is YAML or JSON");
+            try {
+              nodeConfig = yaml.parse(config as string);
+            } catch {
+              throw new Error("Invalid config, not is YAML or JSON");
+            }
           }
         }
-      } else nodeConfig = config;
+      } else if (typeof config === "object") nodeConfig = config;
 
       // Add sources
+      nodeConfig ||= {clusterForks: 0, portListen: 0, repository: {}};
       nodeConfig.repository ||= {};
       Object.keys(nodeConfig.repository).forEach(keyName => this.#internalRepository[keyName] = new Repository(nodeConfig.repository[keyName]));
 
@@ -395,8 +408,9 @@ export class aptStreamConfig {
     }
   }
 
+  databaseAvaible() {return !!this.#internalServerConfig.database;}
   getDatabase() {
-    if (!this.#internalServerConfig.database) throw new Error("No Database set up");
+    if (!this.databaseAvaible()) throw new Error("No Database set up");
     return this.#internalServerConfig.database;
   }
 
