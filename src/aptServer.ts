@@ -1,4 +1,4 @@
-import * as Debian from "@sirherobrine23/debian";
+import * as Debian from "@sirherobrine23/dpkg";
 import { packageManeger } from "./packages.js";
 import express, { ErrorRequestHandler } from "express";
 import streamPromise from "node:stream/promises";
@@ -69,7 +69,7 @@ export default async function main(packageManeger: packageManeger) {
 
 
   // Upload file
-  const uploadIDs: {[id: string]: {createAt: Date, deleteAt: Date, uploading: boolean, repositoryID: string, filename: string}} = {};
+  const uploadIDs = new Map<string, {createAt: Date, deleteAt: Date, uploading: boolean, repositoryID: string, filename: string}>();
   const uploadRoute = express.Router(); aptRoute.use("/upload", uploadRoute);
   uploadRoute.all("*", ({res}) => res.status(404).json({message: "Disable to implement's"}));
   uploadRoute.get("/", ({res}) => res.json({available: true}));
@@ -81,30 +81,30 @@ export default async function main(packageManeger: packageManeger) {
     const repo = packageManeger.getRepository(repositoryID).get(repositoryID);
     if (!repo.enableUpload) return res.status(401).json({message: "This repository not support upload or not setup to Upload files!"});
     let reqID: string;
-    while (true) if (!(uploadIDs[(reqID = crypto.randomBytes(8).toString("hex"))])) break;
+    while (true) if (!(uploadIDs.has(reqID = crypto.randomBytes(8).toString("hex")))) break;
     const { Package: packageName, Architecture, Version } = control;
     const createAt = new Date(), deleteAt = new Date(createAt.getTime() + (1000 * 60 * 5));
-    setTimeout(() => delete uploadIDs[reqID], createAt.getTime() - deleteAt.getTime())
-    uploadIDs[reqID] = {
+    setTimeout(() => {if (uploadIDs.has(reqID)) uploadIDs.delete(reqID);}, createAt.getTime() - deleteAt.getTime())
+    uploadIDs.set(reqID, {
       createAt, deleteAt,
       repositoryID,
       uploading: false,
       filename: `${packageName}_${Architecture}_${Version}.deb`,
-    };
+    });
     return res.status(201).json({
       repositoryType: repo.type,
       uploadID: reqID,
-      config: uploadIDs[reqID]
+      config: uploadIDs.get(reqID),
     });
   });
   uploadRoute.put("/:uploadID", async (req, res) => {
-    if (!(uploadIDs[req.params.uploadID])) return res.status(401).json({error: "Create uploadID fist!"});
-    if (uploadIDs[req.params.uploadID].uploading) return res.status(401).json({error: "Create new uploadID, this in use"});
+    if (!(uploadIDs.has(req.params.uploadID))) return res.status(401).json({error: "Create uploadID fist!"});
+    if (uploadIDs.get(req.params.uploadID).uploading) return res.status(401).json({error: "Create new uploadID, this in use"});
     else if (!(req.headers["content-type"].includes("application/octet-stream"))) return res.status(400).json({error: "Send octet stream file"});
     else if (!(req.headers["content-length"])) return res.status(422).json({error: "Required file size"});
     else if (Number(req.headers["content-length"]) < 10) return res.status(422).json({error: "The file too small!"});
-    uploadIDs[req.params.uploadID].uploading = true;
-    let { repositoryID, filename } = uploadIDs[req.params.uploadID];
+    uploadIDs.get(req.params.uploadID).uploading = true;
+    let { repositoryID, filename } = uploadIDs.get(req.params.uploadID);
 
     try {
       const up = await packageManeger.getRepository(repositoryID).uploadFile(repositoryID);
@@ -126,7 +126,7 @@ export default async function main(packageManeger: packageManeger) {
         message: "Sorry, our error was caught"
       });
     } finally {
-      delete uploadIDs[req.params.uploadID];
+      uploadIDs.delete(req.params.uploadID);
     }
   });
 

@@ -1,14 +1,15 @@
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { extendsFS } from "@sirherobrine23/extends";
 import { Github } from "@sirherobrine23/http";
-import { apt } from "@sirherobrine23/debian";
-import * as dockerRegistry from "@sirherobrine23/docker-registry";
+import { apt } from "@sirherobrine23/dpkg";
 import oldFs, { promises as fs } from "node:fs";
+import dockerRegistry from "@sirherobrine23/docker-registry";
 import openpgp from "openpgp";
 import crypto from "node:crypto";
 import stream from "node:stream";
 import path from "node:path";
 import yaml from "yaml";
+import { finished } from "node:stream/promises";
 
 export type repositorySource = {
   /**
@@ -242,7 +243,7 @@ export class Repository extends Map<string, repositorySource> {
       const gh = await Github.GithubManeger(owner, repository, token);
       return {
         async githubUpload(filename: string, fileSize: number, tagName?: string): Promise<stream.Writable> {
-          if (!tagName) tagName = (await gh.getRelease(true)).tag_name;
+          if (!tagName) tagName = (await gh.getRelease(true).catch(async () => (await gh.getRelease()).at(0)))?.tag_name;
           const str = new stream.PassThrough();
           (await gh.releaseManeger({tagName})).uploadFile({name: filename, content: {stream: str, fileSize}});
           return str;
@@ -269,8 +270,22 @@ export class Repository extends Map<string, repositorySource> {
       };
     } else if (repo.type === "docker") {
       return {
-        async dockerUpload() {
-          throw new Error("Not implemented docker")
+        dockerUpload: async(platform: dockerRegistry.dockerPlatform, callback?: (err?: any) => void) => {
+          const dockerRepo = new dockerRegistry.v2(repo.image, repo.auth);
+          const img = await dockerRepo.createImage();
+          const blob = img.createNewBlob("gzip");
+          finished(blob).then(() => {
+            const pub = () => img.publish(platform).catch(err => {
+              if (err.message === "write EPIPE") return pub();
+              throw err;
+            });
+            return pub();
+          }).then(info => {
+            repo.tags ||= [];
+            repo.tags.push(info.digest);
+            return (callback ||= () => {})();
+          }, err => (callback ||= () => {})(err));
+          return blob;
         }
       };
     }

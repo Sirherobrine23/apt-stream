@@ -1,3 +1,5 @@
 Package: example
 Architecture: amd64
 Version: 1.0.0
+Maintainer: Matheus S Queiroga
+Description: Example package

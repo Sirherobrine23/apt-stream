@@ -6,11 +6,12 @@ import cluster from "node:cluster";
 import aptServer from "./aptServer.js";
 import configManeger from "./configManeger.js";
 import packageManeger from "./packages.js";
-import oldFs, { promises as fs } from "node:fs";
+import oldFs, { createReadStream, promises as fs } from "node:fs";
 import { aptStreamConfig } from "./config.js";
 import { extendsFS } from "@sirherobrine23/extends";
-import { pipeline } from "node:stream/promises";
-import { dpkg } from "@sirherobrine23/debian";
+import { finished } from "node:stream/promises";
+import { dpkg } from "@sirherobrine23/dpkg";
+import { dockerRegistry } from "@sirherobrine23/docker-registry";
 
 yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null).version(false).help(true).strictCommands().demandCommand().alias("h", "help").command(["server", "serve", "s"], "Run http Server", yargs => yargs.option("config", {
     string: true,
@@ -99,13 +100,7 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
 }), async (options) => console.log(((new aptStreamConfig(options.config)).toString(options.outputType.endsWith("64") ? "base64": options.outputType.endsWith("hex") ? "hex" : "utf8", options.outputType.startsWith("json") ? "json" : "yaml")))).command(["$0"], "Maneger config", async options => {
   if (!process.stdin.isTTY) throw new Error("Run with TTY to maneger config!");
   return configManeger(options.parseSync().config);
-})).command(["pack", "pack-deb", "create", "c"], "Create package", yargs => yargs.option("config", {
-  string: true,
-  alias: "c",
-  type: "string",
-  description: "Config file path",
-  default: "aptStream.yml",
-}).option("package-path", {
+})).command(["pack", "pack-deb", "create", "c"], "Create package", yargs => yargs.option("package-path", {
   type: "string",
   string: true,
   alias: "s",
@@ -118,7 +113,20 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
 }).option("compress", {
   type: "string",
   string: true,
-  description: "Data compress file",
+  alias: [
+    "data-compress",
+  ],
+  description: "data.tar compress file",
+  default: "gzip",
+  choices: [
+    "gzip",
+    "passThrough",
+    "xz"
+  ]
+}).option("control-compress", {
+  type: "string",
+  string: true,
+  description: "control.tar compress file",
   default: "gzip",
   choices: [
     "gzip",
@@ -131,13 +139,79 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
   if (!(await extendsFS.exists(path.join(debianConfig, "control")))) throw new Error("Require control file");
   const control = dpkg.parseControl(await fs.readFile(path.join(debianConfig, "control")));
   if (!options.output) options.output = path.join(process.cwd(), `${control.Package}_${control.Architecture}_${control.Version}.deb`); else options.output = path.resolve(process.cwd(), options.output);
+  const scriptsFile = (await fs.readdir(debianConfig)).filter(file => (["preinst", "prerm", "postinst", "postrm"]).includes(file));
+
   console.log("Creating debian package");
-  await pipeline(dpkg.createPackage({
+  await finished(dpkg.createPackage({
     control,
     dataFolder: path.resolve(debianConfig, ".."),
     compress: {
-      data: options.compress as any||"gzip"
+      data: options.compress as any||"gzip",
+      control: options.controlCompress as any||"gzip",
+    },
+    scripts: scriptsFile.reduce<dpkg.packageConfig["scripts"]>((acc, file) => {acc[file] = path.join(debianConfig, file); return acc;}, {})
+  }).pipe(oldFs.createWriteStream(options.output)));
+}).command(["upload", "u"], "Upload package to repoitory allow uploads", yargs => yargs.strictCommands(false).option("config", {
+  string: true,
+  alias: "c",
+  type: "string",
+  description: "Config file path",
+  default: "aptStream.yml",
+}).option("repositoryID", {
+  type: "string",
+  string: true,
+  alias: ["repoID", "id", "i"],
+  demandOption: true,
+  description: "Repository to upload files"
+}), async options => {
+  const files = options._.slice(1).map((file: string) => path.resolve(process.cwd(), file));
+  if (!files.length) throw new Error("Required one file to Upload");
+  const config = new aptStreamConfig(options.config);
+  if (!(config.getRepository(options.repositoryID).get(options.repositoryID)).enableUpload) throw new Error("Repository not support upload file!");
+  for (const filePath of files) {
+    if (!(await extendsFS.exists(filePath))) {
+      console.error("%O not exsists!");
+      continue;
     }
-  }), oldFs.createWriteStream(options.output));
-  console.log("Saved in %O", options.output);
+    try {
+      const stats = await fs.lstat(filePath);
+      const up = await config.getRepository(options.repositoryID).uploadFile(options.repositoryID);
+      const filename = path.basename(filePath);
+      if (up.githubUpload) {
+        await finished(createReadStream(filePath).pipe(await up.githubUpload(filename, stats.size)));
+      } else if (up.gdriveUpload) {
+        await finished(createReadStream(filePath).pipe(await up.gdriveUpload(filename)));
+      } else if (up.ociUpload) {
+        await finished(createReadStream(filePath).pipe(await up.ociUpload(filename)));
+      } else if (up.dockerUpload) {
+        const { Architecture } = await dpkg.parsePackage(createReadStream(filePath), true);
+        const platform: dockerRegistry.dockerPlatform = {os: "linux", architecture: dockerRegistry.nodeToGO("arch", process.arch) as dockerRegistry.goArch}
+        if (Architecture === "all") platform.architecture = "amd64";
+        else if (Architecture === "amd64") platform.architecture = "amd64";
+        else if (Architecture === "arm64") {platform.architecture = "arm64"; platform.variant = "v8"}
+        else if (Architecture === "armhf") {platform.architecture = "arm"; platform.variant = "v7"}
+        else if (Architecture === "armeb"||Architecture === "arm") {platform.architecture = "arm"; platform.variant = "v6"}
+        else if (Architecture === "i386") platform.architecture = "ia32";
+        else if (Architecture === "s390") platform.architecture = "s390";
+        else if (Architecture === "s390x") platform.architecture = "s390x";
+        else if (Architecture === "ppc64"||Architecture === "ppc64el") platform.architecture = "ppc64";
+        else if (Architecture === "mipsel") platform.architecture = "mipsel";
+        else if (Architecture === "mips") platform.architecture = "mips";
+        else throw new Error("Package arch not supported");
+        await new Promise<void>(async (done, reject) => {
+          const tr = await up.dockerUpload(platform, err => {
+            if (err) return reject(err);
+            done()
+          });
+          await finished(createReadStream(filePath).pipe(tr.entry({name: filename, type: "file", size: stats.size})));
+          tr.finalize();
+        });
+      }
+    } catch (err) {
+      console.dir(err, {
+        colors: true,
+        depth: null,
+      });
+    }
+  }
 }).parseAsync();

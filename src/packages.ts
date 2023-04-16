@@ -2,7 +2,7 @@ import { aptStreamConfig, configJSON, repositorySource } from "./config.js";
 import { compress as streamCompress, decompress } from "@sirherobrine23/decompress";
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { extendsCrypto, extendsFS } from "@sirherobrine23/extends";
-import { apt, dpkg } from "@sirherobrine23/debian";
+import { apt, dpkg } from "@sirherobrine23/dpkg";
 import { tmpdir } from "node:os";
 import { format } from "node:util";
 import * as dockerRegistry from "@sirherobrine23/docker-registry";

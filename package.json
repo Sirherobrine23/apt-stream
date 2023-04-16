@@ -44,9 +44,9 @@
     "typescript": "^5.0.4"
   },
   "dependencies": {
-    "@sirherobrine23/cloud": "^3.6.0",
-    "@sirherobrine23/debian": "^3.6.0",
-    "@sirherobrine23/docker-registry": "^3.6.0",
+    "@sirherobrine23/cloud": "^3.6.1",
+    "@sirherobrine23/docker-registry": "^3.6.1",
+    "@sirherobrine23/dpkg": "^3.6.1",
     "@sirherobrine23/extends": "^3.5.5",
     "@sirherobrine23/http": "^3.5.5",
     "acme-client": "^5.0.0",
