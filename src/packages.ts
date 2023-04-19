@@ -268,7 +268,7 @@ export class packageManeger extends aptStreamConfig {
     callback ??= (_void1, _void2) => {};
     if (target.type === "http") {
       try {
-        const control = await dpkg.parsePackage(await coreHTTP.streamRequest(target.url, {headers: target.auth?.header, query: target.auth?.query}));
+        const control = (await dpkg.parsePackage(await coreHTTP.streamRequest(target.url, {headers: target.auth?.header, query: target.auth?.query}))).controlFile;
         callback(null, await this.addPackage(repositoryID, control, {}));
       } catch (err) {
         callback(err, null);
@@ -279,7 +279,7 @@ export class packageManeger extends aptStreamConfig {
       try {
         if (path.length === 0) path.push(...((await bucket.listFiles()).filter(k => k.name.endsWith(".deb")).map(({name}) => name)));
         for (const file of path) {
-          const control = await dpkg.parsePackage(await bucket.getFileStream(file));
+          const control = (await dpkg.parsePackage(await bucket.getFileStream(file))).controlFile;
           callback(null, await this.addPackage(repositoryID, control, {path: file}));
         }
       } catch (err) {
@@ -291,7 +291,7 @@ export class packageManeger extends aptStreamConfig {
       if (gIDs.length === 0) gIDs.push(...((await gdrive.listFiles()).filter(rel => rel.name.endsWith(".deb")).map(({id}) => id)));
       for (const file of gIDs) {
         try {
-          const control = await dpkg.parsePackage(await gdrive.getFileStream(file));
+          const control = (await dpkg.parsePackage(await gdrive.getFileStream(file))).controlFile;
           callback(null, await this.addPackage(repositoryID, control, {id: file}));
         } catch (err) {
           callback(err, null);
@@ -299,13 +299,13 @@ export class packageManeger extends aptStreamConfig {
       }
     } else if (target.type === "github") {
       const { owner, repository, token } = target;
-      const gh = await Github.GithubManeger(owner, repository, token);
+      const gh = await Github.repositoryManeger(owner, repository, {token});
       if (target.subType === "branch") {
-        const { branch = (await gh.branchList()).at(0)?.name ?? "main" } = target;
-        for (const { path: filePath } of (await gh.trees(branch)).tree.filter(file => file.type === "tree" ? false : (file.size > 10) && file.path.endsWith(".deb"))) {
+        const { branch = (await gh.repository.listBranchs()).at(0)?.name ?? "main" } = target;
+        for (const { path: filePath } of (await gh.git.getTree(branch)).tree.filter(file => file.type === "tree" ? false : (file.size > 10) && file.path.endsWith(".deb"))) {
           try {
             const rawURL = new URL(path.posix.join(owner, repository, branch, filePath), "https://raw.githubusercontent.com");
-            const control = await dpkg.parsePackage(await coreHTTP.streamRequest(rawURL, {headers: token ? {Authorization: `token ${token}`} : {}}));
+            const control = (await dpkg.parsePackage(gh.git.getRawFile(branch, filePath))).controlFile;
             callback(null, await this.addPackage(repositoryID, control, {url: rawURL.toString()}));
           } catch (err) {
             callback(err, null);
@@ -313,12 +313,12 @@ export class packageManeger extends aptStreamConfig {
         }
       } else {
         const { tag = [] } = target;
-        if (!tag.length) tag.push(...((await gh.tags()).map(d => d.name)));
+        if (!tag.length) tag.push(...((await gh.release.getRelease()).map(d => d.tag_name)));
         for (const tagName of tag) {
           try {
-            const assets = (await gh.getRelease(tagName)).assets.filter(({name}) => name.endsWith(".deb"));
+            const assets = (await gh.release.getRelease(tagName)).assets.filter(({name}) => name.endsWith(".deb"));
             for (const asset of assets) {
-              const control = await dpkg.parsePackage(await coreHTTP.streamRequest(asset.browser_download_url, {headers: token ? {Authorization: `token ${token}`} : {}}));
+              const control = (await dpkg.parsePackage(await coreHTTP.streamRequest(asset.browser_download_url, {headers: token ? {Authorization: `token ${token}`} : {}}))).controlFile;
               callback(null, await this.addPackage(repositoryID, control, {url: asset.browser_download_url}));
             }
           } catch (err) {
@@ -329,22 +329,20 @@ export class packageManeger extends aptStreamConfig {
     } else if (target.type === "docker") {
       const { image, auth, tags = [] } = target;
       const registry = new dockerRegistry.v2(image, auth);
-      const userAuth = new dockerRegistry.Auth(registry.image, "pull", auth);
       if (tags.length === 0) {
         const { sha256, tag } = registry.image;
         if (sha256) tags.push(sha256);
         else if (tag) tags.push(tag);
         else tags.push(...((await registry.getTags()).reverse().slice(0, 6)));
       }
-      await userAuth.setup();
       for (const tag of tags) {
-        const manifestManeger = new dockerRegistry.Utils.Manifest(await registry.getManifets(tag, userAuth), registry);
+        const manifestManeger = new dockerRegistry.Utils.Manifest(await registry.getManifets(tag), registry);
         const addPckage = async () => {
           for (const layer of manifestManeger.getLayers()) {
-            const blob = await registry.extractLayer(layer.digest, userAuth);
+            const blob = await registry.extractLayer(layer.digest);
             blob.on("error", err => callback(err, null)).on("File", async entry => {
               if (!(entry.path.endsWith(".deb"))) return null;
-              const control = await dpkg.parsePackage(entry.stream);
+              const control = (await dpkg.parsePackage(entry.stream)).controlFile;
               callback(null, await this.addPackage(repositoryID, control, {ref: layer.digest, path: entry.path}));
             });
             await new Promise<void>((done) => blob.on("close", done));

@@ -91,7 +91,7 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
   default: "aptStream.yml",
 }).command(["print", "p"], "Print config to target default is json", yargs => yargs.option("outputType", {
   description: "target output file, targets ended with '64' is base64 string or 'hex' to hexadecimal",
-  default: "json",
+  default: "yaml",
   alias: "o",
   choices: [
     "yaml", "yml", "yaml64", "yml64", "yamlhex", "ymlhex",
@@ -151,6 +151,7 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
     },
     scripts: scriptsFile.reduce<dpkg.packageConfig["scripts"]>((acc, file) => {acc[file] = path.join(debianConfig, file); return acc;}, {})
   }).pipe(oldFs.createWriteStream(options.output)));
+  console.log("File saved %O", options.output);
 }).command(["upload", "u"], "Upload package to repoitory allow uploads", yargs => yargs.strictCommands(false).option("config", {
   string: true,
   alias: "c",
@@ -184,28 +185,24 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
       } else if (up.ociUpload) {
         await finished(createReadStream(filePath).pipe(await up.ociUpload(filename)));
       } else if (up.dockerUpload) {
-        const { Architecture } = await dpkg.parsePackage(createReadStream(filePath), true);
+        const { controlFile } = await dpkg.parsePackage(createReadStream(filePath));
         const platform: dockerRegistry.dockerPlatform = {os: "linux", architecture: dockerRegistry.nodeToGO("arch", process.arch) as dockerRegistry.goArch}
-        if (Architecture === "all") platform.architecture = "amd64";
-        else if (Architecture === "amd64") platform.architecture = "amd64";
-        else if (Architecture === "arm64") {platform.architecture = "arm64"; platform.variant = "v8"}
-        else if (Architecture === "armhf") {platform.architecture = "arm"; platform.variant = "v7"}
-        else if (Architecture === "armeb"||Architecture === "arm") {platform.architecture = "arm"; platform.variant = "v6"}
-        else if (Architecture === "i386") platform.architecture = "ia32";
-        else if (Architecture === "s390") platform.architecture = "s390";
-        else if (Architecture === "s390x") platform.architecture = "s390x";
-        else if (Architecture === "ppc64"||Architecture === "ppc64el") platform.architecture = "ppc64";
-        else if (Architecture === "mipsel") platform.architecture = "mipsel";
-        else if (Architecture === "mips") platform.architecture = "mips";
-        else throw new Error("Package arch not supported");
-        await new Promise<void>(async (done, reject) => {
-          const tr = await up.dockerUpload(platform, err => {
-            if (err) return reject(err);
-            done()
-          });
-          await finished(createReadStream(filePath).pipe(tr.entry({name: filename, type: "file", size: stats.size})));
-          tr.finalize();
-        });
+        if (controlFile.Architecture === "all") platform.architecture = "amd64";
+        else if (controlFile.Architecture === "amd64") platform.architecture = "amd64";
+        else if (controlFile.Architecture === "arm64") {platform.architecture = "arm64"; platform.variant = "v8"}
+        else if (controlFile.Architecture === "armhf") {platform.architecture = "arm"; platform.variant = "v7"}
+        else if (controlFile.Architecture === "armeb"||controlFile.Architecture === "arm") {platform.architecture = "arm"; platform.variant = "v6"}
+        else if (controlFile.Architecture === "i386") platform.architecture = "ia32";
+        else if (controlFile.Architecture === "s390") platform.architecture = "s390";
+        else if (controlFile.Architecture === "s390x") platform.architecture = "s390x";
+        else if (controlFile.Architecture === "ppc64"||controlFile.Architecture === "ppc64el") platform.architecture = "ppc64";
+        else if (controlFile.Architecture === "mipsel") platform.architecture = "mipsel";
+        else if (controlFile.Architecture === "mips") platform.architecture = "mips";
+        else platform.architecture = controlFile.Architecture as any;
+        const tr = await up.dockerUpload(platform);
+        tr.annotations.set("org.sirherobrine23.aptstream.control", JSON.stringify(controlFile));
+        await finished(createReadStream(filePath).pipe(tr.addEntry({name: filename, type: "file", size: stats.size})));
+        await tr.finalize();
       }
     } catch (err) {
       console.dir(err, {
@@ -214,4 +211,8 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
       });
     }
   }
-}).parseAsync();
+  await config.saveConfig().catch(() => {});
+}).parseAsync().catch(err => {
+  console.error(err);
+  process.exit(-1);
+});

@@ -240,12 +240,12 @@ export class Repository extends Map<string, repositorySource> {
     if (repo.type === "github") {
       if (!repo.token) throw new Error("Cannot create upload file to Github Release, required Token to upload files!");
       const { owner, repository, token } = repo;
-      const gh = await Github.GithubManeger(owner, repository, token);
+      const gh = await Github.repositoryManeger(owner, repository, {token});
       return {
         async githubUpload(filename: string, fileSize: number, tagName?: string): Promise<stream.Writable> {
-          if (!tagName) tagName = (await gh.getRelease(true).catch(async () => (await gh.getRelease()).at(0)))?.tag_name;
+          if (!tagName) tagName = (await gh.release.getRelease("__latest__").catch(async () => (await gh.release.getRelease()).at(0)))?.tag_name;
           const str = new stream.PassThrough();
-          (await gh.releaseManeger({tagName})).uploadFile({name: filename, content: {stream: str, fileSize}});
+          await finished(str.pipe((await gh.release.manegerRelease(tagName)).uploadAsset(filename, fileSize)));
           return str;
         }
       };
@@ -270,22 +270,20 @@ export class Repository extends Map<string, repositorySource> {
       };
     } else if (repo.type === "docker") {
       return {
-        dockerUpload: async(platform: dockerRegistry.dockerPlatform, callback?: (err?: any) => void) => {
+        dockerUpload: async(platform: dockerRegistry.dockerPlatform) => {
           const dockerRepo = new dockerRegistry.v2(repo.image, repo.auth);
-          const img = await dockerRepo.createImage();
-          const blob = img.createNewBlob("gzip");
-          finished(blob).then(() => {
-            const pub = () => img.publish(platform).catch(err => {
-              if (err.message === "write EPIPE") return pub();
-              throw err;
-            });
-            return pub();
-          }).then(info => {
-            repo.tags ||= [];
-            repo.tags.push(info.digest);
-            return (callback ||= () => {})();
-          }, err => (callback ||= () => {})(err));
-          return blob;
+          const img = await dockerRepo.createImage(platform);
+          const blob = img.createBlob("gzip");
+          return {
+            ...blob,
+            async finalize() {
+              await blob.finalize();
+              const dockerRepo = await img.finalize();
+              repo.tags ||= [];
+              repo.tags.push(dockerRepo.digest);
+              return dockerRepo;
+            }
+          };
         }
       };
     }
