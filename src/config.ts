@@ -9,7 +9,6 @@ import crypto from "node:crypto";
 import stream from "node:stream";
 import path from "node:path";
 import yaml from "yaml";
-import { finished } from "node:stream/promises";
 
 export type repositorySource = {
   /**
@@ -243,10 +242,8 @@ export class Repository extends Map<string, repositorySource> {
       const gh = await Github.repositoryManeger(owner, repository, {token});
       return {
         async githubUpload(filename: string, fileSize: number, tagName?: string): Promise<stream.Writable> {
-          if (!tagName) tagName = (await gh.release.getRelease("__latest__").catch(async () => (await gh.release.getRelease()).at(0)))?.tag_name;
-          const str = new stream.PassThrough();
-          await finished(str.pipe((await gh.release.manegerRelease(tagName)).uploadAsset(filename, fileSize)));
-          return str;
+          if (!tagName) tagName = (await gh.release.getRelease("__latest__").catch(async () => (await gh.release.getRelease()).at(0)))?.tag_name||"v1";
+          return (await gh.release.manegerRelease(tagName)).uploadAsset(filename, fileSize);
         }
       };
     } else if (repo.type === "googleDriver") {
@@ -255,7 +252,7 @@ export class Repository extends Map<string, repositorySource> {
       return {
         async gdriveUpload(filename: string, folderId?: string): Promise<stream.Writable> {
           const str = new stream.PassThrough();
-          gdrive.uploadFile(filename, str, folderId).then(() => str.end());
+          gdrive.uploadFile(filename, stream.Readable.from(str), folderId);
           return str;
         }
       };
@@ -264,21 +261,22 @@ export class Repository extends Map<string, repositorySource> {
       return {
         async ociUpload(filename: string): Promise<stream.Writable> {
           const str = new stream.PassThrough();
-          oci.uploadFile(filename, str);
+          oci.uploadFile(filename, stream.Readable.from(str));
           return str;
         }
       };
     } else if (repo.type === "docker") {
       return {
-        dockerUpload: async(platform: dockerRegistry.dockerPlatform) => {
+        dockerUpload: async (platform: dockerRegistry.dockerPlatform) => {
           const dockerRepo = new dockerRegistry.v2(repo.image, repo.auth);
           const img = await dockerRepo.createImage(platform);
           const blob = img.createBlob("gzip");
           return {
             ...blob,
-            async finalize() {
+            annotations: img.annotations,
+            async finalize(tagName?: string) {
               await blob.finalize();
-              const dockerRepo = await img.finalize();
+              const dockerRepo = await img.finalize(tagName);
               repo.tags ||= [];
               repo.tags.push(dockerRepo.digest);
               return dockerRepo;

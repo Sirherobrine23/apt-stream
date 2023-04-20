@@ -100,7 +100,19 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
 }), async (options) => console.log(((new aptStreamConfig(options.config)).toString(options.outputType.endsWith("64") ? "base64": options.outputType.endsWith("hex") ? "hex" : "utf8", options.outputType.startsWith("json") ? "json" : "yaml")))).command(["$0"], "Maneger config", async options => {
   if (!process.stdin.isTTY) throw new Error("Run with TTY to maneger config!");
   return configManeger(options.parseSync().config);
-})).command(["pack", "pack-deb", "create", "c"], "Create package", yargs => yargs.option("package-path", {
+})).command(["sync", "synchronize"], "Sync packges directly from CLI", yargs => yargs.option("config", {
+  string: true,
+  alias: "c",
+  type: "string",
+  description: "Config file path",
+  default: "aptStream.yml",
+}), async options => {
+  console.log("Starting...");
+  const pkg = await packageManeger(options.config);
+  await pkg.syncRepositorys((err, db) => err?console.error(err?.message || err):console.log("Added %s: %s/%s (%s)", db.repositoryID, db.controlFile.Package, db.controlFile.Architecture, db.controlFile.Version));
+  console.log("End!");
+  return pkg.close();
+}).command(["pack", "pack-deb", "create", "c"], "Create package", yargs => yargs.option("package-path", {
   type: "string",
   string: true,
   alias: "s",
@@ -164,53 +176,57 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
   alias: ["repoID", "id", "i"],
   demandOption: true,
   description: "Repository to upload files"
+}).option("tag", {
+  type: "string",
+  string: true,
+  description: "Docker/Github release tag name",
+  alias: ["dockerTAG", "ociTAG", "oci_tag", "release_tag"]
 }), async options => {
   const files = options._.slice(1).map((file: string) => path.resolve(process.cwd(), file));
   if (!files.length) throw new Error("Required one file to Upload");
   const config = new aptStreamConfig(options.config);
   if (!(config.getRepository(options.repositoryID).get(options.repositoryID)).enableUpload) throw new Error("Repository not support upload file!");
-  for (const filePath of files) {
-    if (!(await extendsFS.exists(filePath))) {
-      console.error("%O not exsists!");
-      continue;
-    }
-    try {
+  const up = await config.getRepository(options.repositoryID).uploadFile(options.repositoryID);
+  if (up.githubUpload) {
+    for (const filePath of files) {
+      if (!(await extendsFS.exists(filePath))) {console.error("%O not exsists!"); continue;}
       const stats = await fs.lstat(filePath);
-      const up = await config.getRepository(options.repositoryID).uploadFile(options.repositoryID);
       const filename = path.basename(filePath);
-      if (up.githubUpload) {
-        await finished(createReadStream(filePath).pipe(await up.githubUpload(filename, stats.size)));
-      } else if (up.gdriveUpload) {
-        await finished(createReadStream(filePath).pipe(await up.gdriveUpload(filename)));
-      } else if (up.ociUpload) {
-        await finished(createReadStream(filePath).pipe(await up.ociUpload(filename)));
-      } else if (up.dockerUpload) {
-        const { controlFile } = await dpkg.parsePackage(createReadStream(filePath));
-        const platform: dockerRegistry.dockerPlatform = {os: "linux", architecture: dockerRegistry.nodeToGO("arch", process.arch) as dockerRegistry.goArch}
-        if (controlFile.Architecture === "all") platform.architecture = "amd64";
-        else if (controlFile.Architecture === "amd64") platform.architecture = "amd64";
-        else if (controlFile.Architecture === "arm64") {platform.architecture = "arm64"; platform.variant = "v8"}
-        else if (controlFile.Architecture === "armhf") {platform.architecture = "arm"; platform.variant = "v7"}
-        else if (controlFile.Architecture === "armeb"||controlFile.Architecture === "arm") {platform.architecture = "arm"; platform.variant = "v6"}
-        else if (controlFile.Architecture === "i386") platform.architecture = "ia32";
-        else if (controlFile.Architecture === "s390") platform.architecture = "s390";
-        else if (controlFile.Architecture === "s390x") platform.architecture = "s390x";
-        else if (controlFile.Architecture === "ppc64"||controlFile.Architecture === "ppc64el") platform.architecture = "ppc64";
-        else if (controlFile.Architecture === "mipsel") platform.architecture = "mipsel";
-        else if (controlFile.Architecture === "mips") platform.architecture = "mips";
-        else platform.architecture = controlFile.Architecture as any;
-        const tr = await up.dockerUpload(platform);
-        tr.annotations.set("org.sirherobrine23.aptstream.control", JSON.stringify(controlFile));
-        await finished(createReadStream(filePath).pipe(tr.addEntry({name: filename, type: "file", size: stats.size})));
-        await tr.finalize();
-      }
-    } catch (err) {
-      console.dir(err, {
-        colors: true,
-        depth: null,
-      });
+      await finished(createReadStream(filePath).pipe(await up.githubUpload(filename, stats.size, options.tag)));
     }
+  } else if (up.gdriveUpload) {
+    for (const filePath of files) {
+      if (!(await extendsFS.exists(filePath))) {console.error("%O not exsists!"); continue;}
+      const filename = path.basename(filePath);
+      await finished(createReadStream(filePath).pipe(await up.gdriveUpload(filename)));
+    }
+  } else if (up.ociUpload) {
+    for (const filePath of files) {
+      if (!(await extendsFS.exists(filePath))) {console.error("%O not exsists!"); continue;}
+      const filename = path.basename(filePath);
+      await finished(createReadStream(filePath).pipe(await up.ociUpload(filename)));
+    }
+  } else if (up.dockerUpload) {
+    for (const filePath of files) {
+      if (!(await extendsFS.exists(filePath))) {console.error("%O not exsists!"); continue;}
+      const { controlFile } = await dpkg.parsePackage(createReadStream(filePath));
+      const filename = path.basename(filePath);
+      const tr = await up.dockerUpload(dockerRegistry.debianControlToDockerPlatform(controlFile.Architecture));
+      tr.annotations.set("org.opencontainers.image.description", controlFile.Description);
+      tr.annotations.set("org.opencontainers.image.version", controlFile.Version);
+      tr.annotations.set("org.sirherobrine23.aptstream.control", JSON.stringify(controlFile));
+      tr.annotations.set("com.github.package.type", "aptstream_package");
+      await finished(createReadStream(filePath).pipe(tr.addEntry({
+        name: filename,
+        type: "file",
+        size: (await fs.lstat(filePath)).size
+      })));
+      const img_info = await tr.finalize(options.tag||controlFile.Version);
+      console.log("Image digest: %O", img_info.digest);
+    }
+
   }
+
   await config.saveConfig().catch(() => {});
 }).parseAsync().catch(err => {
   console.error(err);

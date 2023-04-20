@@ -8,7 +8,7 @@ import { format } from "node:util";
 import * as dockerRegistry from "@sirherobrine23/docker-registry";
 import oldFs, { promises as fs } from "node:fs";
 import coreHTTP, { Github } from "@sirherobrine23/http";
-import streamPromise from "node:stream/promises";
+import streamPromise, { finished } from "node:stream/promises";
 import mongoDB from "mongodb";
 import openpgp from "openpgp";
 import stream from "node:stream";
@@ -340,12 +340,15 @@ export class packageManeger extends aptStreamConfig {
         const addPckage = async () => {
           for (const layer of manifestManeger.getLayers()) {
             const blob = await registry.extractLayer(layer.digest);
-            blob.on("error", err => callback(err, null)).on("File", async entry => {
-              if (!(entry.path.endsWith(".deb"))) return null;
-              const control = (await dpkg.parsePackage(entry.stream)).controlFile;
-              callback(null, await this.addPackage(repositoryID, control, {ref: layer.digest, path: entry.path}));
+            blob.on("error", err => callback(err, null)).on("entry", async (entry, str, next) => {
+              next();
+              if (!(entry.name.endsWith(".deb"))) return null;
+              try {
+                const control = (await dpkg.parsePackage(stream.Readable.from(str))).controlFile;
+                callback(null, await this.addPackage(repositoryID, control, {ref: layer.digest, path: entry.path}));
+              } catch (err) {callback(err, null);}
             });
-            await new Promise<void>((done) => blob.on("close", done));
+            await finished(blob);
           }
         }
         if (manifestManeger.multiArch) {
