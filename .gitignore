@@ -11,6 +11,7 @@ storage/
 
 # Ingore node folders
 node_modules/
+/*-lock*
 *.tgz
 
 # Typescript

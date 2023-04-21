@@ -307,7 +307,6 @@ interface serverConfig {
   database?: {
     url: string;
     databaseName?: string;
-    collectionName?: string;
   };
   gpgSign?: {
     gpgPassphrase?: string;
@@ -393,8 +392,7 @@ export class aptStreamConfig {
       if (nodeConfig.database?.url) {
         this.#internalServerConfig.database = {
           url: nodeConfig.database.url,
-          databaseName: nodeConfig.database.databaseName || "aptStream",
-          collectionName: nodeConfig.database.collectionName || "packages"
+          databaseName: nodeConfig.database.databaseName || "aptStream"
         }
       }
       if (nodeConfig.gpgSign?.privateKey && nodeConfig.gpgSign?.publicKey) {
@@ -425,10 +423,9 @@ export class aptStreamConfig {
     return this.#internalServerConfig.database;
   }
 
-  setDatabse(url: string, collectionName?: string, databaseName?: string) {
+  setDatabse(url: string, databaseName?: string) {
     this.#internalServerConfig.database = {
       url,
-      collectionName,
       databaseName
     };
     return this;

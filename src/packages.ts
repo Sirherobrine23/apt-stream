@@ -12,12 +12,19 @@ import streamPromise, { finished } from "node:stream/promises";
 import mongoDB from "mongodb";
 import openpgp from "openpgp";
 import stream from "node:stream";
+import crypto from "node:crypto";
 import path from "node:path";
 
 export interface dbStorage {
   repositoryID: string;
   restoreFile: any;
   controlFile: dpkg.debianControl;
+}
+
+export interface userAuth {
+  createAt: Date;
+  username: string;
+  token: string[];
 }
 
 export default async function main(initConfig: string|configJSON|aptStreamConfig) {
@@ -30,18 +37,35 @@ export default async function main(initConfig: string|configJSON|aptStreamConfig
 }
 
 export class packageManeger extends aptStreamConfig {
+  #client: mongoDB.MongoClient;
   #collection: mongoDB.Collection<dbStorage>;
-  async close() {}
+  #authCollection: mongoDB.Collection<userAuth>;
+  async close() {this.#client.close()}
   constructor(initConfig: string|configJSON|aptStreamConfig, connectionCallback?: (err?: any) => void) {
     connectionCallback ||= (err) => {if(err) process.emit("warning", err);}
     super(initConfig);
     (async () => {
       const database = this.getDatabase();
-      const mongoClient = await (new mongoDB.MongoClient(database.url)).connect();
+      const mongoClient = this.#client = await (new mongoDB.MongoClient(database.url)).connect();
       mongoClient.on("error", err => console.error(err));
-      this.#collection = mongoClient.db(database.databaseName || "aptStream").collection<dbStorage>(database.collectionName || "packages");
-      this.close = () => mongoClient.close();
+      this.#authCollection = mongoClient.db(database.databaseName || "aptStream").collection<userAuth>("auth");
+      this.#collection = mongoClient.db(database.databaseName || "aptStream").collection<dbStorage>("packages");
     })().then(() => connectionCallback(), err => connectionCallback(err));
+  }
+
+  async createToken(username: string) {
+    let token: string;
+    while (true) {
+      token = crypto.randomBytes(8).toString("hex");
+      if (!(await this.#authCollection.findOne({token}))) break;
+    }
+    if (!(await this.#authCollection.findOne({username}))) await this.#authCollection.insertOne({username, createAt: new Date(), token: []});
+    await this.#authCollection.findOneAndUpdate({username}, {$inc: {token: token as never}});
+    return token;
+  }
+
+  async userAs(token: string) {
+    return !!(await this.#authCollection.findOne({token: [String(token)]}));
   }
 
   async pkgQuery(query: mongoDB.Filter<dbStorage>) {

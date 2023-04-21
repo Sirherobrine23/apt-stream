@@ -1,8 +1,9 @@
 import * as Debian from "@sirherobrine23/dpkg";
 import { packageManeger } from "./packages.js";
 import express, { ErrorRequestHandler } from "express";
-import streamPromise from "node:stream/promises";
+import streamPromise, { finished } from "node:stream/promises";
 import expressLayer from "express/lib/router/layer.js";
+import expressRate from "express-rate-limit";
 import cluster from "node:cluster";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -70,10 +71,18 @@ export default async function main(packageManeger: packageManeger) {
 
   // Upload file
   const uploadIDs = new Map<string, {createAt: Date, deleteAt: Date, uploading: boolean, repositoryID: string, filename: string}>();
-  const uploadRoute = express.Router(); aptRoute.use("/upload", uploadRoute);
-  uploadRoute.all("*", ({res}) => res.status(404).json({message: "Disable to implement's"}));
+  const uploadRoute = express.Router();
+  aptRoute.use("/upload", uploadRoute);
   uploadRoute.get("/", ({res}) => res.json({available: true}));
-  uploadRoute.post("/", ({body}, res) => {
+  uploadRoute.use(expressRate({
+    skipSuccessfulRequests: true,
+    windowMs: 1000 * 60 * 40,
+    max: 1000,
+  })).post("/", async ({body, headers: { authorization }}, res) => {
+    if (!authorization) return res.status(401).json({error: "Require authorization/Authorization header"});
+    else if (!(authorization.startsWith("Bearer "))) return res.status(401).json({error: "Invalid authorization schema"});
+    else if (!(await packageManeger.userAs(authorization.replace("Bearer", "").trim()))) return res.status(401).json({error: "Invalid token!"});
+
     if (!body) return res.status(400).json({error: "Required JSON or YAML to set up upload"});
     const { repositoryID, control } = body as {repositoryID: string, control: Debian.debianControl};
     if (!repositoryID) return res.status(400).json({error: "Required repository ID"});
@@ -81,7 +90,7 @@ export default async function main(packageManeger: packageManeger) {
     const repo = packageManeger.getRepository(repositoryID).get(repositoryID);
     if (!repo.enableUpload) return res.status(401).json({message: "This repository not support upload or not setup to Upload files!"});
     let reqID: string;
-    while (true) if (!(uploadIDs.has(reqID = crypto.randomBytes(8).toString("hex")))) break;
+    while (true) if (!(uploadIDs.has(reqID = crypto.randomBytes(12).toString("hex")))) break;
     const { Package: packageName, Architecture, Version } = control;
     const createAt = new Date(), deleteAt = new Date(createAt.getTime() + (1000 * 60 * 5));
     setTimeout(() => {if (uploadIDs.has(reqID)) uploadIDs.delete(reqID);}, createAt.getTime() - deleteAt.getTime())
@@ -96,8 +105,7 @@ export default async function main(packageManeger: packageManeger) {
       uploadID: reqID,
       config: uploadIDs.get(reqID),
     });
-  });
-  uploadRoute.put("/:uploadID", async (req, res) => {
+  }).put("/:uploadID", async (req, res) => {
     if (!(uploadIDs.has(req.params.uploadID))) return res.status(401).json({error: "Create uploadID fist!"});
     if (uploadIDs.get(req.params.uploadID).uploading) return res.status(401).json({error: "Create new uploadID, this in use"});
     else if (!(req.headers["content-type"].includes("application/octet-stream"))) return res.status(400).json({error: "Send octet stream file"});
@@ -108,19 +116,36 @@ export default async function main(packageManeger: packageManeger) {
 
     try {
       const up = await packageManeger.getRepository(repositoryID).uploadFile(repositoryID);
+      const tagName = (Array.isArray(req.query.tagName) ? req.query.tagName.at(0).toString() : req.query.tagName.toString());
       if (up.githubUpload) {
-        const tagName = (Array.isArray(req.query.tagName) ? req.query.tagName.at(0).toString() : req.query.tagName.toString());
         if (!tagName) res.setHeader("warning", "Using latest github release tag!");
         await streamPromise.finished(req.pipe(await up.githubUpload(filename, Number(req.headers["content-length"]), tagName)));
-        return res.status(201).json({type: "Github release"});
+        return res.status(201).json({
+          type: "Github release"
+        });
       } else if (up.gdriveUpload) {
         const id = (Array.isArray(req.query.id) ? req.query.id.at(0).toString() : req.query.id.toString());
         await streamPromise.finished(req.pipe(await up.gdriveUpload(filename, id)));
-        return res.status(201).json({type: "Google driver"});
+        return res.status(201).json({
+          type: "Google driver"
+        });
       } else if (up.ociUpload) {
         if (typeof req.query.path === "string") filename = path.posix.resolve("/", req.query.path, filename);
         await streamPromise.finished(req.pipe(await up.ociUpload(filename)));
-        return res.status(201).json({type: "Oracle cloud bucket"});
+        return res.status(201).json({
+          type: "Oracle cloud bucket",
+          filename
+        });
+      } else if (up.dockerUpload) {
+        const tar = await up.dockerUpload({
+          os: "linux",
+          architecture: req.query.arch||"generic" as any,
+        });
+        await finished(req.pipe(tar.addEntry({name: filename, size: Number(req.headers["content-length"])})));
+        return res.status(201).json({
+          type: "Oracle cloud bucket",
+          image: await tar.finalize(tagName),
+        });
       }
       return res.status(502).json({
         message: "Sorry, our error was caught"
