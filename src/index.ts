@@ -83,24 +83,36 @@ yargs(process.argv.slice(2)).wrap(process.stdout.getWindowSize?.().at?.(0)||null
     }
   }
   return aptServer(pkg);
-}).command(["maneger", "m", "$0"], "maneger packages in database", yargs => yargs.option("config", {
+}).command(["print", "p"], "Print config to target default is json", yargs => yargs.option("config", {
   string: true,
   alias: "c",
   type: "string",
   description: "Config file path",
   default: "aptStream.yml",
-}).command(["print", "p"], "Print config to target default is json", yargs => yargs.option("outputType", {
+}).option("outputType", {
   description: "target output file, targets ended with '64' is base64 string or 'hex' to hexadecimal",
   default: "yaml",
   alias: "o",
   choices: [
-    "yaml", "yml", "yaml64", "yml64", "yamlhex", "ymlhex",
-    "json", "json64", "jsonhex",
+    "yaml", "yml", "json",
+    "yaml64", "yml64", "json64",
+    "yamlhex", "ymlhex", "jsonhex",
   ],
-}), async (options) => console.log(((new aptStreamConfig(options.config)).toString(options.outputType.endsWith("64") ? "base64": options.outputType.endsWith("hex") ? "hex" : "utf8", options.outputType.startsWith("json") ? "json" : "yaml")))).command(["$0"], "Maneger config", async options => {
+}), (options) => {
+  const config = new aptStreamConfig(options.config);
+  const target = options.outputType.startsWith("json") ? "json" : "yaml",
+    encode = options.outputType.endsWith("64") ? "base64": options.outputType.endsWith("hex") ? "hex" : "utf8";
+  return console.log((config.toString(encode, target)));
+}).command(["config", "maneger", "$0"], "Maneger config", yargs => yargs.option("config", {
+  string: true,
+  alias: "c",
+  type: "string",
+  description: "Config file path",
+  default: "aptStream.yml",
+}), async options => {
   if (!process.stdin.isTTY) throw new Error("Run with TTY to maneger config!");
-  return configManeger(options.parseSync().config);
-})).command(["sync", "synchronize"], "Sync packges directly from CLI", yargs => yargs.option("config", {
+  return configManeger(options.config);
+}).command(["sync", "synchronize"], "Sync packges directly from CLI", yargs => yargs.option("config", {
   string: true,
   alias: "c",
   type: "string",

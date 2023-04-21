@@ -15,5 +15,6 @@ node_modules/
 *.tgz
 
 # Typescript
+tsconfig.tsbuildinfo
 *.d.ts
 *.js

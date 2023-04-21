@@ -2,8 +2,6 @@ version: "3.9"
 name: apt_stream
 
 volumes:
-  # Save debian packages in a cache directory to avoid downloading them again
-  cache_deb:
   # Config
   config:
 
@@ -27,8 +25,7 @@ services:
 
     # Mount volumes
     volumes:
-    - cache_deb:/data/cache_deb
-    - config:/data/config
+    - config:/data
 
     # Set extra config to "apt-stream server"
     command:

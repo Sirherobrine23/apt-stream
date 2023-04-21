@@ -1,8 +1,9 @@
+/*.y*ml
+/example
+/*[Dd]ocker*
 node_modules/
 .devcontainer/
 .vscode/
 .github/
-/repoconfig.yml
 *.d.ts
 *.js
-*.key

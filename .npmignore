@@ -26,6 +26,7 @@ node_modules/
 /apt*.yml
 /apt*.yaml
 /apt*.json
+/example
 .repoTest/
 thunder-tests
 *.deb

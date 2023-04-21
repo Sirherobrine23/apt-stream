@@ -339,7 +339,7 @@ export class aptStreamConfig {
   toString(encode?: BufferEncoding, type?: "json"|"yaml") {
     encode ||= "utf8";
     type ||= "json";
-    return ((["hex", "base64", "base64url"]).includes(encode) ? (encode+":") : "")+(Buffer.from((type === "yaml" ? yaml : JSON).stringify(this.toJSON()), "utf8").toString(encode || "utf8"));
+    return ((["hex", "base64", "base64url"]).includes(encode) ? (encode+":") : "")+(Buffer.from((type === "yaml" ? yaml : JSON).stringify(this.toJSON(), null, (["hex", "base64", "base64url"]).includes(encode) ? undefined : 2), "utf8").toString(encode || "utf8"));
   }
 
   #configPath?: string;

@@ -1,19 +1,31 @@
 {
   "name": "apt-stream",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Create repository without save file in disk",
   "private": false,
   "type": "module",
-  "homepage": "https://github.com/Sirherobrine23/apt-stream#readme",
-  "author": "Matheus Sampaio Queiroga <srherobrine20@gmail.com> (https://sirherobrine23.org/)",
   "license": "GPL-2.0",
+  "author": "Matheus Sampaio Queiroga <srherobrine20@gmail.com>",
+  "homepage": "https://github.com/Sirherobrine23/apt-stream#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Sirherobrine23/apt-stream.git"
   },
-  "keywords": [],
+  "keywords": [
+    "apt",
+    "pack",
+    "upload",
+    "cloud",
+    "stream",
+    "server",
+    "debian",
+    "ubuntu",
+    "cli",
+    "interactive"
+  ],
   "bugs": {
-    "url": "https://github.com/Sirherobrine23/apt-stream/issues"
+    "url": "https://github.com/Sirherobrine23/apt-stream/issues",
+    "email": "srherobrine20+apt-stream@gmail.com"
   },
   "sponsor": {
     "url": "https://github.com/sponsors/Sirherobrine23"
@@ -28,7 +40,6 @@
     "apt-stream": "./src/index.js"
   },
   "scripts": {
-    "build": "tsc --build --clean && tsc --build",
     "prepack": "tsc --build --clean && tsc --build",
     "postpack": "tsc --build --clean"
   },
