@@ -86,11 +86,15 @@ export default async function main(configOrigin: string) {
         if (configManeger.deleteRepository(repoSelected)) console.log("Repository deleted");
         else console.error("Fail to delete repository!");
       }
-    }
+    } else if (action === "serverEdit") await serverConfig(configManeger);
     await configManeger.saveConfig().catch(() => {});
   }
 
   return configManeger.close().then(async () => configManeger.saveConfig());
+}
+
+async function serverConfig(config: packageManeger) {
+  // config.setRelease
 }
 
 async function setDatabse(repo: aptStreamConfig) {

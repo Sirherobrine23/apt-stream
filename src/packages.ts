@@ -53,6 +53,15 @@ export class packageManeger extends aptStreamConfig {
     })().then(() => connectionCallback(), err => connectionCallback(err));
   }
 
+  getClientInfo() {
+    const connection = this.#client["topology"];
+    return {
+      connections: {
+        max: Number(connection.s.options.maxConnecting),
+        current: Number(connection.client.s.activeSessions?.size),
+      }
+    }
+  }
   async createToken(username: string) {
     let token: string;
     while (true) {
@@ -76,6 +85,10 @@ export class packageManeger extends aptStreamConfig {
     return (await this.#collection.stats()).count;
   }
 
+  async getPackagesHash() {
+    return this.#collection.distinct("controlFile.MD5sum");
+  }
+
   async repoInfo(repositoryName: string) {
     const repositorys = this.getRepository(repositoryName).getAllRepositorys();
     if (!repositorys.length) throw new Error("Repository or Component name not exists!");
@@ -85,39 +98,11 @@ export class packageManeger extends aptStreamConfig {
     };
   }
 
-  createRawPackages(repositoryName: string, componentName: string, Arch: string, appRoot: string = ""): stream.Readable {
+  async createPackage(repositoryName: string, componentName: string, Arch: string, appRoot: string = "", options?: {compress?: "gz"|"xz", callback: (str: stream.Readable) => void}): Promise<{filePath: string; fileSize: number; sha512: string; sha256: string; sha1: string; md5: string;}[]> {
     const repositorys = this.getRepository(repositoryName).getAllRepositorys().filter(pkg => pkg.componentName === componentName);
     if (!repositorys.length) throw new Error("Repository or Component name not exists!");
-    const self = this;
-    return new class Packages extends stream.Readable {
-      constructor() {
-        super({autoDestroy: true, emitClose: true, read(_s){}});
-        (async () => {
-          let breakLine = false;
-          for (const repo of repositorys) {
-            const componentName = repo.componentName;
-            let pkgs: mongoDB.WithId<dbStorage>[], page = 0;
-            while ((pkgs = await self.#collection.find({repositoryID: repo.repositoryID, "controlFile.Architecture": Arch}).skip(page).limit(2500).toArray()).length > 0) {
-              page += pkgs.length;
-              for (const {controlFile: pkg} of pkgs) {
-                let pkgHash: string;
-                if (!(pkgHash = pkg.SHA1)) return;
-                if (breakLine) this.push("\n\n"); else breakLine = true;
-                this.push(dpkg.createControl({
-                  ...pkg,
-                  Filename: path.posix.join("/", appRoot, "pool", componentName, `${pkgHash}.deb`).slice(1),
-                }));
-              }
-            }
-          }
-          this.push(null);
-        })().catch(err => this.emit("error", err));
-      }
-    }
-  }
 
-  async createPackage(repositoryName: string, componentName: string, Arch: string, appRoot: string = "", options?: {compress?: "gz"|"xz", callback: (str: stream.Readable) => void}): Promise<{filePath: string; fileSize: number; sha512: string; sha256: string; sha1: string; md5: string;}[]> {
-    const str = this.createRawPackages(repositoryName, componentName, Arch, appRoot);
+    const str = new stream.Readable({autoDestroy: true, emitClose: true, read(_s){}});
     const gg: (Promise<{filePath: string; fileSize: number; sha512: string; sha256: string; sha1: string; md5: string;}>)[] = [];
     if (typeof options?.callback === "function") (async () => options.callback(str.pipe(streamCompress(options.compress === "gz" ? "gzip" : options.compress === "xz" ? "xz" : "passThrough"))))().catch(err => str.emit("error", err));
     else {
@@ -135,9 +120,27 @@ export class packageManeger extends aptStreamConfig {
       gg.push(getHash());
       if (this.getRelease("gzip")) gg.push(getHash("gz"));
       if (this.getRelease("xz")) gg.push(getHash("xz"));
-      return Promise.all(gg)
     }
-    return [];
+    (async () => {
+      let breakLine = false;
+      for (const repo of repositorys) {
+        let pkgs: mongoDB.WithId<dbStorage>[], page = 0;
+        while ((pkgs = await this.#collection.find({repositoryID: repo.repositoryID, "controlFile.Architecture": Arch}).skip(page).limit(2500).toArray()).length > 0) {
+          page += pkgs.length;
+          for (const {controlFile: pkg} of pkgs) {
+            let pkgHash: string;
+            if (!(pkgHash = pkg.MD5sum)) continue;
+            if (breakLine) str.push("\n\n"); else breakLine = true;
+            str.push(dpkg.createControl({
+              ...pkg,
+              Filename: path.posix.join("/", appRoot, "pool", `${pkgHash}.deb`).slice(1),
+            }));
+          }
+        }
+      }
+      str.push(null);
+    })().catch(err => str.emit("error", err));
+    return Promise.all(gg);
   }
 
   async createRelease(repositoryName: string, appRoot: string) {

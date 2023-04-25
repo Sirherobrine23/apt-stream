@@ -110,23 +110,23 @@ export interface repositorySources {
 
 export class Repository extends Map<string, repositorySource> {
   #Description?: string;
-  setDescription(value: string) {this.#Description = value;}
+  setDescription(value: string) {this.#Description = value; return this;}
   getDescription() {return this.#Description}
 
   #Codename?: string;
-  setCodename(value: string) {this.#Codename = value;}
+  setCodename(value: string) {this.#Codename = value; return this;}
   getCodename() {return this.#Codename}
 
   #Suite?: string;
-  setSuite(value: string) {this.#Suite = value;}
+  setSuite(value: string) {this.#Suite = value; return this;}
   getSuite() {return this.#Suite}
 
   #Origin?: string;
-  setOrigin(value: string) {this.#Origin = value;}
+  setOrigin(value: string) {this.#Origin = value; return this;}
   getOrigin() {return this.#Origin}
 
   #Label?: string;
-  setLabel(value: string) {this.#Label = value;}
+  setLabel(value: string) {this.#Label = value; return this;}
   getLabel() {return this.#Label}
 
   constructor(src?: repositorySources) {
@@ -543,7 +543,9 @@ export class aptStreamConfig {
    */
   createRepository(repositoryName: string) {
     if (this.#internalRepository[repositoryName]) throw new Error("Repository name are exists");
-    return (this.#internalRepository[repositoryName] = new Repository());
+    this.#internalRepository[repositoryName] = new Repository();
+    this.#internalRepository[repositoryName].setCodename(repositoryName).setOrigin(repositoryName);
+    return this.#internalRepository[repositoryName];
   }
 
   /**

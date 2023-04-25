@@ -248,7 +248,11 @@ yargs(process.argv.slice(2)).wrap(terminalSize).version(false).help(true).alias(
     if (!!(options.autoSync ?? options["auto-sync"])) (async () => {
       while (true) {
         console.info("Initing package sync!");
-        await packageManeger.syncRepositorys((err, {repositoryID, controlFile: { Package, Architecture, Version }}) => err ? null : console.log("Sync/Add: %s -> %s %s/%s (%s)", repositoryID, Package, Architecture, Version));
+        await packageManeger.syncRepositorys((_err, db) => {
+          if (!db) return;
+          const {repositoryID, controlFile: { Package, Architecture, Version }} = db;
+          console.log("Sync/Add: %s -> %s %s/%s (%s)", repositoryID, Package, Architecture, Version)
+        });
         console.log("Next sync after 30 Minutes");
         await new Promise(done => setTimeout(done, 1800000));
       }
@@ -284,11 +288,14 @@ yargs(process.argv.slice(2)).wrap(terminalSize).version(false).help(true).alias(
   });
 
   // Serve info
-  app.get("/", async ({res}) => res.json({
-    cluster: cluster.worker?.id ?? 1,
-    sourcesCount: packageManeger.getRepositorys().length,
-    packagesRegistred: await packageManeger.packagesCount()
-  }));
+  app.get("/", async ({res}) => {
+    return res.json({
+      cluster: cluster.worker?.id ?? 1,
+      sourcesCount: packageManeger.getRepositorys().length,
+      packagesRegistred: await packageManeger.packagesCount(),
+      db: packageManeger.getClientInfo(),
+    });
+  });
 
   // Public key
   app.get("/public(_key|)(|.gpg|.dearmor)", async (req, res) => res.setHeader("Content-Type", req.path.endsWith(".dearmor") ? "octect/stream" : "text/plain").send(await packageManeger.getPublicKey(req.path.endsWith(".dearmor") ? "dearmor" : "armor")));
@@ -315,24 +322,18 @@ yargs(process.argv.slice(2)).wrap(terminalSize).version(false).help(true).alias(
     });
   });
 
-  app.get("/pool", async ({res}) => packageManeger.pkgQuery({}).then(data => res.json(data.map(d => d.controlFile))));
-  app.get("/pool/:componentName", async (req, res) => {
-    const src = packageManeger.getRepositorys().map(src => src.repositoryManeger.getAllRepositorys()).flat(2).filter(d => d.componentName === req.params.componentName);
-    if (!src.length) return res.status(404).json({error: "No component with this name"});
-    const packagesList = (await Promise.all(src.map(async ({repositoryID}) => packageManeger.pkgQuery({repositoryID})))).flat(3);
-    if (!packagesList.length) return res.status(404).json({error: "Package component not exists"});
-    return res.json(packagesList.map(({controlFile, repositoryID}) =>  ({controlFile, repositoryID})));
-  });
+  // Send package hashs
+  app.get("/pool", async ({res}) => res.json(await packageManeger.getPackagesHash()));
 
-  app.get("/pool/:componentName/(:hash)(|/data.tar|.deb)", async (req, res) => {
-    const packageID = (await packageManeger.pkgQuery({"controlFile.SHA1": req.params.hash})).at(0);
+  app.get("/pool/(:hash)(|/data.tar|.deb)", async (req, res) => {
+    const packageID = (await packageManeger.pkgQuery({"controlFile.MD5sum": req.params.hash})).at(0);
     if (!packageID) return res.status(404).json({error: "Package not exist"});
     if (req.path.endsWith("/data.tar")||req.path.endsWith(".deb")) {
       const str = await packageManeger.getPackageStream(packageID);
       if (req.path.endsWith(".deb")) return str.pipe(res.writeHead(200, {}));
       return (await Debian.getPackageData(str)).pipe(res.writeHead(200, {}));
     }
-    return res.json(packageID.controlFile);
+    return res.json({...packageID.controlFile, Filename: undefined});
   });
 
   // Upload file
