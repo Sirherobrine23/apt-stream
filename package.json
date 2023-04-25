@@ -46,25 +46,25 @@
   "devDependencies": {
     "@types/express": "^4.17.17",
     "@types/inquirer": "^9.0.3",
-    "@types/node": "^18.15.12",
+    "@types/node": "^18.16.0",
     "@types/yargs": "^17.0.24",
     "ts-node": "^10.9.1",
     "typescript": "^5.0.4"
   },
   "dependencies": {
-    "@sirherobrine23/cloud": "^3.6.5",
-    "@sirherobrine23/decompress": "^3.6.5",
-    "@sirherobrine23/docker-registry": "^3.6.5",
-    "@sirherobrine23/dpkg": "^3.6.5",
-    "@sirherobrine23/extends": "^3.6.5",
-    "@sirherobrine23/http": "^3.6.5",
+    "@sirherobrine23/cloud": "^3.6.6",
+    "@sirherobrine23/decompress": "^3.6.6",
+    "@sirherobrine23/docker-registry": "^3.6.6",
+    "@sirherobrine23/dpkg": "^3.6.6",
+    "@sirherobrine23/extends": "^3.6.6",
+    "@sirherobrine23/http": "^3.6.6",
     "express": "^4.18.2",
     "express-rate-limit": "^6.7.0",
-    "inquirer": "^9.1.5",
+    "inquirer": "^9.2.0",
     "inquirer-file-tree-selection-prompt": "^2.0.5",
     "mongodb": "^5.3.0",
     "openpgp": "^5.8.0",
-    "yaml": "^2.2.1",
+    "yaml": "^2.2.2",
     "yargs": "^17.7.1"
   }
 }

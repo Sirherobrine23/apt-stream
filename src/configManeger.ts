@@ -34,10 +34,6 @@ export default async function main(configOrigin: string) {
           value: "del"
         },
         {
-          name: "Synchronize packages from repositories",
-          value: "syncRepo"
-        },
-        {
           name: "Edit server configs",
           value: "serverEdit"
         },
@@ -48,11 +44,7 @@ export default async function main(configOrigin: string) {
       ]
     })).initAction;
     if (action === "exit") break;
-    else if (action === "syncRepo") {
-      console.log("Starting...");
-      await configManeger.syncRepositorys((err, db) => err?console.error(err?.message || err):console.log("Added %s: %s/%s (%s)", db.repositoryID, db.controlFile.Package, db.controlFile.Architecture, db.controlFile.Version));
-      console.log("End!");
-    } else if (action === "newRepo") {
+    else if (action === "newRepo") {
       const repoName = (await inquirer.prompt({
         name: "repoName",
         message: "Repository name:",
@@ -528,15 +520,9 @@ async function createSource(): Promise<repositorySource> {
         name: "authType",
         type: "list",
         choices: [
-          {name: "Pre authentication key", value: "preAuthentication"},
+          {name: "OCI Cli config", value: "preAuthentication"},
           {name: "User", value: "user"},
         ]
-      },
-      {
-        when: (answers) => answers["authType"] === "preAuthentication",
-        name: "PreAuthenticatedKey",
-        type: "input",
-        message: "Preauthenticed Key"
       },
       {
         when: (answers) => answers["authType"] !== "preAuthentication",
@@ -578,25 +564,18 @@ async function createSource(): Promise<repositorySource> {
       }
     ]);
     const { namespace, name, region, enableUpload } = ociPromps;
-    if (ociPromps["authType"] === "preAuthentication") {
-      return {
-        type: "oracleBucket", componentName, enableUpload,
-        authConfig: {
-          namespace, name, region,
-          auth: {
-            type: "preAuthentication",
-            PreAuthenticatedKey: ociPromps["PreAuthenticatedKey"],
-          }
-        }
-      };
-    }
+    if (ociPromps["authType"] === "preAuthentication") return {
+      type: "oracleBucket", componentName, enableUpload,
+      authConfig: {
+        namespace, name, region
+      }
+    };
     const { fingerprint, privateKey, tenancy, user, passphase } = ociPromps;
     return {
       type: "oracleBucket", componentName, enableUpload,
       authConfig: {
         namespace, name, region,
         auth: {
-          type: "user",
           fingerprint, privateKey, tenancy, user, passphase
         }
       }

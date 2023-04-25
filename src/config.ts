@@ -32,7 +32,7 @@ export type repositorySource = {
 }|{
   type: "mirror",
   enableUpload?: false;
-  config: apt.sourceList
+  config: apt.sourceList;
 }|{
   type: "github",
   /**
@@ -191,10 +191,8 @@ export class Repository extends Map<string, repositorySource> {
       if (!(repo.clientId && repo.clientSecret && (typeof repo.clientToken?.access_token === "string" && repo.clientToken.access_token.trim().length > 0))) throw new Error("Invalid settings to Google oAuth");
       if (!(repo.gIDs?.length)) delete repo.gIDs;
     } else if (repo.type === "oracleBucket") {
-      if (!(repo.authConfig && repo.authConfig.auth)) throw new Error("Required auth config to Oracle bucket");
-      else if (repo.authConfig.auth.type === "preAuthentication") {
-        if (!(repo.authConfig.auth.PreAuthenticatedKey?.trim?.())) throw new Error("Invalid pre authecation key to Oracle Cloud bucket");
-      } else if (repo.authConfig.auth.type === "user") {
+      if (!repo.authConfig) throw new Error("Required auth config to Oracle bucket");
+      if (repo.authConfig.auth) {
         const { tenancy, user, fingerprint, privateKey, passphase } = repo.authConfig.auth;
         if (!(tenancy && user && fingerprint && privateKey)) throw new Error("Invalid auth to Oracle Cloud");
         if (!passphase) delete repo.authConfig.auth.passphase;
@@ -250,11 +248,7 @@ export class Repository extends Map<string, repositorySource> {
       const { clientId: clientID, clientSecret, clientToken } = repo;
       const gdrive = await googleDriver.GoogleDriver({clientID, clientSecret, token: clientToken});
       return {
-        async gdriveUpload(filename: string, folderId?: string): Promise<stream.Writable> {
-          const str = new stream.PassThrough();
-          gdrive.uploadFile(filename, stream.Readable.from(str), folderId);
-          return str;
-        }
+        gdriveUpload: async (filename: string, folderId?: string) => gdrive.uploadFile(filename, folderId),
       };
     } else if (repo.type === "oracleBucket") {
       const oci = await oracleBucket.oracleBucket(repo.authConfig);
@@ -282,6 +276,9 @@ export class Repository extends Map<string, repositorySource> {
               return dockerRepo;
             }
           };
+        },
+        dockerUploadV2() {
+          return new dockerRegistry.v2(repo.image, repo.auth);
         }
       };
     }
@@ -304,6 +301,10 @@ interface serverConfig {
   portListen: number;
   clusterForks: number;
   dataStorage?: string;
+  release?: {
+    gzip?: boolean;
+    xz?: boolean;
+  };
   database?: {
     url: string;
     databaseName?: string;
@@ -359,6 +360,7 @@ export class aptStreamConfig {
       }
       if (typeof config === "string") {
         let indexofEncoding: number;
+        if (config.startsWith("env:")) config = process.env[config.slice(4)];
         if (path.isAbsolute(path.resolve(process.cwd(), config))) {
           if (oldFs.existsSync(path.resolve(process.cwd(), config))) config = oldFs.readFileSync((this.#configPath = path.resolve(process.cwd(), config)), "utf8")
           else {
@@ -389,12 +391,13 @@ export class aptStreamConfig {
       delete nodeConfig.repository;
       this.#internalServerConfig = {clusterForks: Number(nodeConfig.clusterForks || 0), portListen: Number(nodeConfig.portListen || 0)};
       if (nodeConfig.dataStorage) this.#internalServerConfig.dataStorage = path.resolve(process.cwd(), nodeConfig.dataStorage);
-      if (nodeConfig.database?.url) {
-        this.#internalServerConfig.database = {
-          url: nodeConfig.database.url,
-          databaseName: nodeConfig.database.databaseName || "aptStream"
-        }
-      }
+      this.#internalServerConfig.release = {};
+      this.#internalServerConfig.release.gzip = !!(nodeConfig.release?.gzip ?? true);
+      this.#internalServerConfig.release.xz = !!(nodeConfig.release?.xz ?? true);
+      if (nodeConfig.database?.url) this.#internalServerConfig.database = {
+        url: nodeConfig.database.url,
+        databaseName: nodeConfig.database.databaseName || "aptStream"
+      };
       if (nodeConfig.gpgSign?.privateKey && nodeConfig.gpgSign?.publicKey) {
         const { gpgPassphrase, privateKey, publicKey } = nodeConfig.gpgSign;
         if (privateKey.filePath && publicKey.filePath) {
@@ -415,6 +418,15 @@ export class aptStreamConfig {
       }
       if (!this.#internalServerConfig.gpgSign?.gpgPassphrase && typeof this.#internalServerConfig.gpgSign?.gpgPassphrase === "string") delete this.#internalServerConfig.gpgSign.gpgPassphrase;
     }
+  }
+
+  setRelease(target: keyof configJSON["release"], value: boolean) {
+    this.#internalServerConfig.release[target] = !!value;
+    return this;
+  }
+
+  getRelease(target: keyof configJSON["release"]) {
+    return !!(this.#internalServerConfig.release?.[target]);
   }
 
   databaseAvaible() {return !!this.#internalServerConfig.database;}

@@ -76,37 +76,68 @@ export class packageManeger extends aptStreamConfig {
     return (await this.#collection.stats()).count;
   }
 
-  async createPackage(repositoryName: string, componentName: string, Arch: string, appRoot: string = "", options?: {compress?: "gz"|"xz", callback: (str: stream.Readable) => void}) {
+  async repoInfo(repositoryName: string) {
+    const repositorys = this.getRepository(repositoryName).getAllRepositorys();
+    if (!repositorys.length) throw new Error("Repository or Component name not exists!");
+    return {
+      packagesCount: (await Promise.all(repositorys.map(async ({repositoryID}) => this.#collection.countDocuments({repositoryID})))).reduce((acc, count) => acc+count, 0),
+      sources: repositorys.length,
+    };
+  }
+
+  createRawPackages(repositoryName: string, componentName: string, Arch: string, appRoot: string = ""): stream.Readable {
     const repositorys = this.getRepository(repositoryName).getAllRepositorys().filter(pkg => pkg.componentName === componentName);
     if (!repositorys.length) throw new Error("Repository or Component name not exists!");
-    const str = new stream.Readable({read(){}});
-    const getHash = (compress?: "gz"|"xz") => extendsCrypto.createHashAsync(str.pipe(streamCompress(compress === "gz" ? "gzip" : compress === "xz" ? "xz" : "passThrough"))).then(({hash, byteLength}) => ({
-      filePath: path.posix.join(componentName, "binary-"+Arch, "Packages"+(compress === "gz" ? ".gz" : compress === "xz" ? ".xz" : "")),
-      fileSize: byteLength,
-      sha512: hash.sha512,
-      sha256: hash.sha256,
-      sha1: hash.sha1,
-      md5: hash.md5,
-    }));
-    if (typeof options?.callback === "function") (async () => options.callback(str.pipe(streamCompress(options.compress === "gz" ? "gzip" : options.compress === "xz" ? "xz" : "passThrough"))))().catch(err => str.emit("error", err));
-    const gg = Promise.all([getHash(), getHash("gz"), getHash("xz")]);
-    (async () => {
-      let breakLine = false;
-      for (const repo of repositorys) {
-        const componentName = repo.componentName || "main";
-        for (const { controlFile: pkg } of await this.pkgQuery({repositoryID: repo.repositoryID, "controlFile.Architecture": Arch}).then(res => Arch === "all" ? res : this.pkgQuery({repositoryID: repo.repositoryID, "controlFile.Architecture": "all"}).then(res2 => res2.concat(res)))) {
-          let pkgHash: string;
-          if (!(pkgHash = pkg.SHA1)) continue;
-          if (breakLine) str.push("\n\n"); else breakLine = true;
-          str.push(dpkg.createControl({
-            ...pkg,
-            Filename: path.posix.join("/", appRoot, "pool", componentName, `${pkgHash}.deb`).slice(1),
-          }));
-        }
+    const self = this;
+    return new class Packages extends stream.Readable {
+      constructor() {
+        super({autoDestroy: true, emitClose: true, read(_s){}});
+        (async () => {
+          let breakLine = false;
+          for (const repo of repositorys) {
+            const componentName = repo.componentName;
+            let pkgs: mongoDB.WithId<dbStorage>[], page = 0;
+            while ((pkgs = await self.#collection.find({repositoryID: repo.repositoryID, "controlFile.Architecture": Arch}).skip(page).limit(2500).toArray()).length > 0) {
+              page += pkgs.length;
+              for (const {controlFile: pkg} of pkgs) {
+                let pkgHash: string;
+                if (!(pkgHash = pkg.SHA1)) return;
+                if (breakLine) this.push("\n\n"); else breakLine = true;
+                this.push(dpkg.createControl({
+                  ...pkg,
+                  Filename: path.posix.join("/", appRoot, "pool", componentName, `${pkgHash}.deb`).slice(1),
+                }));
+              }
+            }
+          }
+          this.push(null);
+        })().catch(err => this.emit("error", err));
       }
-      str.push(null);
-    })().catch(err => str.emit("error", err));
-    return gg;
+    }
+  }
+
+  async createPackage(repositoryName: string, componentName: string, Arch: string, appRoot: string = "", options?: {compress?: "gz"|"xz", callback: (str: stream.Readable) => void}): Promise<{filePath: string; fileSize: number; sha512: string; sha256: string; sha1: string; md5: string;}[]> {
+    const str = this.createRawPackages(repositoryName, componentName, Arch, appRoot);
+    const gg: (Promise<{filePath: string; fileSize: number; sha512: string; sha256: string; sha1: string; md5: string;}>)[] = [];
+    if (typeof options?.callback === "function") (async () => options.callback(str.pipe(streamCompress(options.compress === "gz" ? "gzip" : options.compress === "xz" ? "xz" : "passThrough"))))().catch(err => str.emit("error", err));
+    else {
+      async function getHash(compress?: "gz"|"xz") {
+        const com = stream.Readable.from(str.pipe(streamCompress(compress === "gz" ? "gzip" : compress === "xz" ? "xz" : "passThrough")));
+        return extendsCrypto.createHashAsync(com).then(({hash, byteLength}) => ({
+          filePath: path.posix.join(componentName, "binary-"+Arch, "Packages"+(compress === "gz" ? ".gz" : compress === "xz" ? ".xz" : "")),
+          fileSize: byteLength,
+          sha512: hash.sha512,
+          sha256: hash.sha256,
+          sha1: hash.sha1,
+          md5: hash.md5,
+        }));
+      }
+      gg.push(getHash());
+      if (this.getRelease("gzip")) gg.push(getHash("gz"));
+      if (this.getRelease("xz")) gg.push(getHash("xz"));
+      return Promise.all(gg)
+    }
+    return [];
   }
 
   async createRelease(repositoryName: string, appRoot: string) {
@@ -119,13 +150,12 @@ export class packageManeger extends aptStreamConfig {
     const SHA1 = new Set<{hash: string, size: number, path: string}>();
     const SHA256 = new Set<{hash: string, size: number, path: string}>();
     const SHA512 = new Set<{hash: string, size: number, path: string}>();
-    for (const arch of Architectures) for (const comp of Components) (await this.createPackage(repositoryName, comp, arch, appRoot)).forEach(({fileSize, filePath, md5, sha1, sha256, sha512}) => {
+    await Promise.all(Architectures.map(async arch => Promise.all(Components.map(async comp => this.createPackage(repositoryName, comp, arch, appRoot).then(res => res.forEach(({fileSize, filePath, md5, sha1, sha256, sha512}) => {
       MD5Sum.add({size: fileSize, path: filePath, hash: md5});
       SHA1.add({size: fileSize, path: filePath, hash: sha1});
       SHA256.add({size: fileSize, path: filePath, hash: sha256});
       SHA512.add({size: fileSize, path: filePath, hash: sha512});
-    });
-
+    }), err => console.log(err))))));
     const toJSON = () => {
       if ((!Architectures.length) && (!Components.length)) throw new Error("Invalid config repository or not loaded to database!");
       const data = {
@@ -138,10 +168,10 @@ export class packageManeger extends aptStreamConfig {
         Description: source.getDescription(),
         Architectures,
         Components,
-        MD5Sum: Array.from(MD5Sum.values()),
-        SHA1: Array.from(SHA1.values()),
-        SHA256: Array.from(SHA256.values()),
-        SHA512: Array.from(SHA512.values()),
+        MD5Sum: Array.from(MD5Sum.values()).sort((a, b) => b.size - a.size),
+        SHA1: Array.from(SHA1.values()).sort((a, b) => b.size - a.size),
+        SHA256: Array.from(SHA256.values()).sort((a, b) => b.size - a.size),
+        SHA512: Array.from(SHA512.values()).sort((a, b) => b.size - a.size),
       };
       if (!data.Architectures.length) throw new Error("Require one packages loaded to database!");
       return data;
@@ -165,7 +195,7 @@ export class packageManeger extends aptStreamConfig {
       const insertHash = (name: string, hashes: typeof reljson.MD5Sum) => {
         configString.push(name+":");
         const sizeLength = hashes.at(0).size.toString().length+2;
-        hashes.forEach(data => configString.push((" "+data.hash + " "+(Array((sizeLength - (data.size.toString().length))).fill("").join(" ")+(data.size.toString()))+" "+data.path)));
+        for (const data of hashes) configString.push((" "+data.hash + " "+(Array(Math.max(1, Math.abs(sizeLength - (data.size.toString().length)))).fill("").join(" ")+(data.size.toString()))+" "+data.path))
       }
       if (reljson.MD5Sum.length > 0) insertHash("MD5Sum", reljson.MD5Sum);
       if (reljson.SHA1.length > 0) insertHash("SHA1", reljson.SHA1);
