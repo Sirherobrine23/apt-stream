@@ -1,14 +1,14 @@
 import { aptStreamConfig, configJSON, repositorySource } from "./config.js";
-import { compress as streamCompress, decompress } from "@sirherobrine23/decompress";
+import { decompressStream, compressStream } from "@sirherobrine23/decompress";
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
 import { extendsCrypto, extendsFS } from "@sirherobrine23/extends";
 import { apt, dpkg } from "@sirherobrine23/dpkg";
 import { tmpdir } from "node:os";
 import { format } from "node:util";
-import * as dockerRegistry from "@sirherobrine23/docker-registry";
 import oldFs, { promises as fs } from "node:fs";
 import coreHTTP, { Github } from "@sirherobrine23/http";
 import streamPromise, { finished } from "node:stream/promises";
+import dockerRegistry from "@sirherobrine23/docker-registry";
 import mongoDB from "mongodb";
 import openpgp from "openpgp";
 import stream from "node:stream";
@@ -104,10 +104,10 @@ export class packageManeger extends aptStreamConfig {
 
     const str = new stream.Readable({autoDestroy: true, emitClose: true, read(_s){}});
     const gg: (Promise<{filePath: string; fileSize: number; sha512: string; sha256: string; sha1: string; md5: string;}>)[] = [];
-    if (typeof options?.callback === "function") (async () => options.callback(str.pipe(streamCompress(options.compress === "gz" ? "gzip" : options.compress === "xz" ? "xz" : "passThrough"))))().catch(err => str.emit("error", err));
+    if (typeof options?.callback === "function") (async () => options.callback(str.pipe(compressStream(options.compress === "gz" ? "gzip" : options.compress === "xz" ? "xz" : "passThrough"))))().catch(err => str.emit("error", err));
     else {
       async function getHash(compress?: "gz"|"xz") {
-        const com = stream.Readable.from(str.pipe(streamCompress(compress === "gz" ? "gzip" : compress === "xz" ? "xz" : "passThrough")));
+        const com = stream.Readable.from(str.pipe(compressStream(compress === "gz" ? "gzip" : compress === "xz" ? "xz" : "passThrough")));
         return extendsCrypto.createHashAsync(com).then(({hash, byteLength}) => ({
           filePath: path.posix.join(componentName, "binary-"+Arch, "Packages"+(compress === "gz" ? ".gz" : compress === "xz" ? ".xz" : "")),
           fileSize: byteLength,
@@ -430,7 +430,7 @@ export class packageManeger extends aptStreamConfig {
             const mainReq = new URL(path.posix.join(distMain.pathname, Component, `binary-${Arch}`, `Packages${ext}`), distMain);
             const tmpFile = (path.join(tmpdir(), Buffer.from(mainReq.toString(), "utf8").toString("hex")))+".package";
             try {
-              await streamPromise.finished((await coreHTTP.streamRequest(mainReq)).pipe(decompress()).pipe(oldFs.createWriteStream(tmpFile)));
+              await streamPromise.finished((await coreHTTP.streamRequest(mainReq)).pipe(decompressStream()).pipe(oldFs.createWriteStream(tmpFile)));
               const packagesLocation: {start: number, end: number}[] = [];
               let start: number = 0, currentChuck = 0;
               await streamPromise.finished(oldFs.createReadStream(tmpFile).on("data", (chunk: Buffer) => {

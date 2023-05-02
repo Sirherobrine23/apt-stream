@@ -193,9 +193,20 @@ export class Repository extends Map<string, repositorySource> {
     } else if (repo.type === "oracleBucket") {
       if (!repo.authConfig) throw new Error("Required auth config to Oracle bucket");
       if (repo.authConfig.auth) {
-        const { tenancy, user, fingerprint, privateKey, passphase } = repo.authConfig.auth;
-        if (!(tenancy && user && fingerprint && privateKey)) throw new Error("Invalid auth to Oracle Cloud");
-        if (!passphase) delete repo.authConfig.auth.passphase;
+        if (Array.isArray(repo.authConfig.auth)) {
+          if (!(repo.authConfig.auth.length)) throw new Error("Require auth to Oracle Cloud");
+          const backup = repo.authConfig.auth.slice(0, 2);
+          if (!(oldFs.existsSync(path.resolve(process.cwd(), backup.at(0))))) throw new Error("Invalid Oracle auth path, Path not exists");
+          backup[0] = path.resolve(process.cwd(), backup.at(0));
+          if (typeof backup.at(1) === "string") {
+            if (!(backup[1] = backup[1].trim())) delete backup[1];
+          } else delete backup[1];
+          repo.authConfig.auth = backup.filter(Boolean);
+        } else {
+          const { tenancy, user, fingerprint, privateKey, passphase } = repo.authConfig.auth;
+          if (!(tenancy && user && fingerprint && privateKey)) throw new Error("Invalid auth to Oracle Cloud");
+          if (!passphase) delete repo.authConfig.auth.passphase;
+        }
       }
       if (!(repo.path?.length)) delete repo.path;
     } else if (repo.type === "docker") {
@@ -252,13 +263,7 @@ export class Repository extends Map<string, repositorySource> {
       };
     } else if (repo.type === "oracleBucket") {
       const oci = await oracleBucket.oracleBucket(repo.authConfig);
-      return {
-        async ociUpload(filename: string): Promise<stream.Writable> {
-          const str = new stream.PassThrough();
-          oci.uploadFile(filename, stream.Readable.from(str));
-          return str;
-        }
-      };
+      return {ociUpload: oci.uploadFile};
     } else if (repo.type === "docker") {
       return {
         dockerUpload: async (platform: dockerRegistry.dockerPlatform) => {

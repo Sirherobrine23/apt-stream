@@ -93,18 +93,23 @@ yargs(process.argv.slice(2)).wrap(terminalSize).version(false).help(true).alias(
   string: true,
   alias: [
     "data-compress",
+    "c"
   ],
   description: "data.tar compress file",
   default: "gzip",
   choices: [
-    "gzip",
     "passThrough",
-    "xz"
+    "gzip",
+    "zst",
+    "xz",
   ]
 }).option("control-compress", {
   type: "string",
   string: true,
   description: "control.tar compress file",
+  alias: [
+    "d"
+  ],
   default: "gzip",
   choices: [
     "gzip",

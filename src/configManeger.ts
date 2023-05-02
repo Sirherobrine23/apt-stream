@@ -4,7 +4,7 @@ import { googleDriver } from "@sirherobrine23/cloud";
 import { readFile } from "fs/promises";
 import { apt } from "@sirherobrine23/dpkg";
 import inquirerFileTreeSelection from "inquirer-file-tree-selection-prompt";
-import * as dockerRegistry from "@sirherobrine23/docker-registry";
+import dockerRegistry from "@sirherobrine23/docker-registry";
 import coreHTTP from "@sirherobrine23/http";
 import inquirer from "inquirer";
 import path from "node:path";
