@@ -1,7 +1,7 @@
 import { Repository, aptStreamConfig, repositorySource } from "./config.js";
 import connectDb, { packageManeger } from "./packages.js";
 import { googleDriver } from "@sirherobrine23/cloud";
-import { readFile } from "fs/promises";
+import { readFile, readdir } from "fs/promises";
 import { apt } from "@sirherobrine23/dpkg";
 import inquirerFileTreeSelection from "inquirer-file-tree-selection-prompt";
 import dockerRegistry from "@sirherobrine23/docker-registry";
@@ -9,6 +9,10 @@ import coreHTTP from "@sirherobrine23/http";
 import inquirer from "inquirer";
 import path from "node:path";
 import { MongoClient } from "mongodb";
+import { createServer } from "http";
+import { githubToken } from "@sirherobrine23/http/src/github.js";
+import dns from "node:dns/promises";
+import os from "os";
 inquirer.registerPrompt("file-tree-selection", inquirerFileTreeSelection);
 
 export default async function main(configOrigin: string) {
@@ -94,30 +98,90 @@ export default async function main(configOrigin: string) {
 }
 
 async function serverConfig(config: packageManeger) {
-  // config.setRelease
+  while (true) {
+    await config.saveConfig().catch(() => {});
+    const { action } = await inquirer.prompt({
+      name: "action",
+      type: "list",
+      choices: [
+        {
+          name: "Serve port",
+          value: "serverPort"
+        },
+        {
+          name: "Serve threads forks",
+          value: "serverThreads"
+        },
+        {
+          name: "Change mongodb URL",
+          value: "updateDB"
+        },
+        {
+          name: "Switch gzip release compressions",
+          value: "relGzip"
+        },
+        {
+          name: "Switch xz release compressions",
+          value: "relXz"
+        },
+        {
+          name: "Return",
+          value: "exit"
+        },
+      ]
+    });
+    if (action === "exit") break;
+    else if (action === "relGzip") console.log("Set gzip to %O", config.setCompressRelease("gzip", !config.getCompressRelease("gzip")).getCompressRelease("gzip"));
+    else if (action === "relXz") console.log("Set xz to %O", config.setCompressRelease("xz", !config.getCompressRelease("xz")).getCompressRelease("xz"));
+    else if (action === "serverPort") {
+      await inquirer.prompt({
+        name: "port",
+        type: "number",
+        default: config.getPortListen(),
+        message: "Server port:",
+        validate(input: number) {
+          if (input < 0 || input > 65535) return "Port must be between 0 and 65535";
+          config.setPortListen(input);
+          return true;
+        }
+      });
+    } else if (action === "serverThreads") {
+      await inquirer.prompt({
+        name: "threads",
+        type: "number",
+        default: config.getClusterForks(),
+        message: "Server threads forks:",
+        validate(input: number) {
+          if (input < 0) return "Threads must be greater or equal 0";
+          if (input > os.availableParallelism()) console.warn("\nThe number of threads was greater than the system can handle, be careful!");
+          config.setClusterForks(input);
+          return true;
+        }
+      });
+    } else if (action === "updateDB") await setDatabse(config);
+  }
 }
 
 async function setDatabse(repo: aptStreamConfig) {
-  const promps = await inquirer.prompt([
-    {
-      name: "url",
-      type: "input",
-      message: "Mongodb URL:",
-      async validate(input) {
-        try {
-          await (await (new MongoClient(input)).connect()).close(true);
-          return true;
-        } catch (err) {
-          return err?.message || err;
-        }
-      },
+  const promps = await inquirer.prompt({
+    name: "url",
+    type: "input",
+    message: "Mongodb URL:",
+    async validate(input) {
+      try {
+        await (await (new MongoClient(input)).connect()).close(true);
+        return true;
+      } catch (err) {
+        return err?.message || err;
+      }
     },
-  ]);
+  });
   repo.setDatabse(promps.url);
 }
 
 async function editRepository(repo: Repository, configManeger: packageManeger) {
   let exitShowSync = false;
+  await configManeger.saveConfig().catch(() => {});
   while (true) {
     const action = (await inquirer.prompt({
       name: "action",
@@ -292,7 +356,12 @@ async function createSource(): Promise<repositorySource> {
       url: (await inquirer.prompt({
         name: "reqUrl",
         type: "input",
-        validate: (urlInput) => {try {new URL(urlInput); return true} catch (err) { return err?.message || String(err); }}
+        async validate(urlInput) {
+          try {
+            const { hostname } = new URL(urlInput);
+            await dns.resolve(hostname);
+            return true
+          } catch (err) { return err?.message || String(err); }}
       })).reqUrl,
     };
   } else if (srcType === "mirror") {
@@ -309,7 +378,6 @@ async function createSource(): Promise<repositorySource> {
         when: (answers) => answers["sourceFrom"] === "fileSelect",
         name: "fileSource",
         type: "file-tree-selection",
-        default: process.cwd(),
         message: "Select file source path:"
       },
       {
@@ -331,6 +399,7 @@ async function createSource(): Promise<repositorySource> {
         name: "token",
         type: "input",
         message: "Github token to private repositorys (it is not necessary if it is public):",
+        default: githubToken,
         validate(input: string) {
           if (input.length > 0) if (!(input.startsWith("ghp_"))) return "Invalid token, if old token set manualy in Config file!";
           return true;
@@ -410,16 +479,36 @@ async function createSource(): Promise<repositorySource> {
       tag,
     }
   } else if (srcType === "googleDriver") {
+    let client_id: string, client_secret: string;
+    try {
+      const secretFile = (await readdir(process.cwd()).then(files => files.filter(file => file.endsWith(".json") && file.startsWith("client_secret")))).at(0);
+      if (secretFile) {
+        const cbb = JSON.parse(await readFile(secretFile, "utf8"));
+        if (typeof cbb.installed === "object") {
+          client_id = cbb.installed.client_id;
+          client_secret = cbb.installed.client_secret;
+        } else if (typeof cbb.CBe === "object") {
+          client_id = cbb.CBe.client_id;
+          client_secret = cbb.CBe.client_secret;
+        } else if (typeof cbb.client_id === "string" && typeof cbb.client_secret === "string") {
+          client_id = cbb.client_id;
+          client_secret = cbb.client_secret;
+        }
+      }
+    } catch {}
+
     const clientPromp = await inquirer.prompt([
       {
         type: "input",
-        name: "secret",
-        message: "Google oAuth Client Secret:"
+        name: "id",
+        message: "Google oAuth Client ID:",
+        default: client_id
       },
       {
         type: "input",
-        name: "id",
-        message: "Google oAuth Client ID:"
+        name: "secret",
+        message: "Google oAuth Client Secret:",
+        default: client_secret,
       },
       {
         type: "confirm",
@@ -440,15 +529,42 @@ async function createSource(): Promise<repositorySource> {
       }
     ]);
     let clientToken: any;
-    const gdrive = await googleDriver.GoogleDriver({
-      clientSecret: clientPromp["secret"],
-      clientID: clientPromp["id"],
-      callback(err, data) {
-        if (err) throw err;
-        if (data.authUrl) return console.info("Open %O to complete Google Drive Auth", data.authUrl);
-        clientToken = data.token;
-      },
+    const server = createServer();
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, () => {
+        const addr = server.address();
+        server.removeListener("error", reject);
+        resolve(Number((typeof addr === "string" ? addr : addr?.port) || addr));
+      });
     });
+    const gdrive = await googleDriver.GoogleDriver({
+      authConfig: {
+        clientSecret: clientPromp["secret"],
+        clientID: clientPromp["id"],
+        redirectURL: "http://localhost:" + port,
+        authUrlCallback(authUrl, callback) {
+          server.once("request", function call(req, res) {
+            const { searchParams } = new URL(String(req.url), "http://localhost:"+port);
+            if (!searchParams.has("code")) {
+              res.statusCode = 400;
+              res.end("No code");
+              server.once("request", call);
+              return;
+            }
+            res.statusCode = 200;
+            res.end(searchParams.get("code"));
+            callback(searchParams.get("code"))
+          });
+          console.error("Please open the following URL in your browser:", authUrl);
+        },
+        tokenCallback(token) {
+          clientToken = token;
+          console.log("Google Drive token:", token);
+        },
+      }
+    });
+    server.close();
     let gIDs: string[];
     if (clientPromp["listFiles"]) {
       const folderID = clientPromp["folderID"]||undefined;

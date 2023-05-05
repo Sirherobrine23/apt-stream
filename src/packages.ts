@@ -118,8 +118,8 @@ export class packageManeger extends aptStreamConfig {
         }));
       }
       gg.push(getHash());
-      if (this.getRelease("gzip")) gg.push(getHash("gz"));
-      if (this.getRelease("xz")) gg.push(getHash("xz"));
+      if (this.getCompressRelease("gzip")) gg.push(getHash("gz"));
+      if (this.getCompressRelease("xz")) gg.push(getHash("xz"));
     }
     (async () => {
       let breakLine = false;
@@ -275,7 +275,7 @@ export class packageManeger extends aptStreamConfig {
       });
     } else if (source.type === "googleDriver") {
       const { clientId, clientSecret, clientToken } = source, { restoreFile: { id } } = packageTarget;
-      const gdrive = await googleDriver.GoogleDriver({clientID: clientId, clientSecret, token: clientToken});
+      const gdrive = await googleDriver.GoogleDriver({authConfig: {clientID: clientId, clientSecret, token: clientToken, redirectURL: "http://localhost", authUrlCallback(){throw new Error("Set up fist")}, tokenCallback() {}}});
       return gdrive.getFileStream(id).then(src => {
         if (saveCache) src.pipe(oldFs.createWriteStream(saveCache));
         return stream.Readable.from(src);
@@ -344,7 +344,7 @@ export class packageManeger extends aptStreamConfig {
       }
     } else if (target.type === "googleDriver") {
       const { clientId, clientSecret, clientToken, gIDs = [] } = target;
-      const gdrive = await googleDriver.GoogleDriver({clientID: clientId, clientSecret, token: clientToken});
+      const gdrive = await googleDriver.GoogleDriver({authConfig: {clientID: clientId, clientSecret, token: clientToken, redirectURL: "http://localhost", authUrlCallback(){throw new Error("Set up fist")}, tokenCallback() {}}});
       if (gIDs.length === 0) gIDs.push(...((await gdrive.listFiles()).filter(rel => rel.name.endsWith(".deb")).map(({id}) => id)));
       for (const file of gIDs) {
         try {

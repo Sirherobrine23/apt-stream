@@ -66,7 +66,10 @@ yargs(process.argv.slice(2)).wrap(terminalSize).version(false).help(true).alias(
 }), async options => {
   console.log("Starting...");
   const packageManeger = await packages(options.config);
+  let i = 0;
   await packageManeger.syncRepositorys((err, db) => {
+    process.stdout.moveCursor(0, -1);
+    console.log("Packages loaded %f", i++);
     if (!!err) {
       if (options.verbose) return console.error(err);
       return console.error(err.message || err);
@@ -246,7 +249,7 @@ yargs(process.argv.slice(2)).wrap(terminalSize).version(false).help(true).alias(
   if (!!options.data) packageManeger.setDataStorage(options.data);
   if (!!options.port) packageManeger.setPortListen(options.port);
   if (!!options.db) packageManeger.setDatabse(options.db);
-  if (!!options["disable-release-compress"]) packageManeger.setRelease("gzip", false).setRelease("xz", false);
+  if (!!options["disable-release-compress"]) packageManeger.setCompressRelease("gzip", false).setCompressRelease("xz", false);
   if (!!options.cluster && options.cluster > 0) packageManeger.setClusterForks(options.cluster);
   let forks = packageManeger.getClusterForks();
   if (cluster.isPrimary) {

@@ -257,7 +257,16 @@ export class Repository extends Map<string, repositorySource> {
       };
     } else if (repo.type === "googleDriver") {
       const { clientId: clientID, clientSecret, clientToken } = repo;
-      const gdrive = await googleDriver.GoogleDriver({clientID, clientSecret, token: clientToken});
+      const gdrive = await googleDriver.GoogleDriver({
+        authConfig: {
+          clientID,
+          clientSecret,
+          token: clientToken,
+          redirectURL: "http://localhost",
+          authUrlCallback(){throw new Error("Set up fist")},
+          tokenCallback() {},
+        }
+      });
       return {
         gdriveUpload: async (filename: string, folderId?: string) => gdrive.uploadFile(filename, folderId),
       };
@@ -425,12 +434,12 @@ export class aptStreamConfig {
     }
   }
 
-  setRelease(target: keyof configJSON["release"], value: boolean) {
+  setCompressRelease(target: keyof configJSON["release"], value: boolean) {
     this.#internalServerConfig.release[target] = !!value;
     return this;
   }
 
-  getRelease(target: keyof configJSON["release"]) {
+  getCompressRelease(target: keyof configJSON["release"]) {
     return !!(this.#internalServerConfig.release?.[target]);
   }
 
