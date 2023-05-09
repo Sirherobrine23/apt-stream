@@ -245,12 +245,13 @@ yargs(process.argv.slice(2)).wrap(terminalSize).version(false).help(true).alias(
   description: "Disable Release generate Packages.gz and Packages.gz to calculate hash",
   alias: "L"
 }), async options => {
-  const packageManeger = await packages(options.config);
-  if (!!options.data) packageManeger.setDataStorage(options.data);
-  if (!!options.port) packageManeger.setPortListen(options.port);
-  if (!!options.db) packageManeger.setDatabse(options.db);
-  if (!!options["disable-release-compress"]) packageManeger.setCompressRelease("gzip", false).setCompressRelease("xz", false);
-  if (!!options.cluster && options.cluster > 0) packageManeger.setClusterForks(options.cluster);
+  let packageManegerInit = new aptStreamConfig(options.config);
+  if (!!options.data) packageManegerInit.setDataStorage(options.data);
+  if (!!options.port) packageManegerInit.setPortListen(options.port);
+  if (!!options.db) packageManegerInit.setDatabse(options.db);
+  if (!!options["disable-release-compress"]) packageManegerInit.setCompressRelease("gzip", false).setCompressRelease("xz", false);
+  if (!!options.cluster && options.cluster > 0) packageManegerInit.setClusterForks(options.cluster);
+  const packageManeger = await packages(packageManegerInit);
   let forks = packageManeger.getClusterForks();
   if (cluster.isPrimary) {
     if (!!(options.autoSync ?? options["auto-sync"])) (async () => {
