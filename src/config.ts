@@ -1,16 +1,18 @@
 import { googleDriver, oracleBucket } from "@sirherobrine23/cloud";
-import { extendsFS } from "@sirherobrine23/extends";
-import { Github } from "@sirherobrine23/http";
-import { apt } from "@sirherobrine23/dpkg";
-import oldFs, { promises as fs } from "node:fs";
 import dockerRegistry from "@sirherobrine23/docker-registry";
-import openpgp from "openpgp";
+import { apt, dpkg } from "@sirherobrine23/dpkg";
+import { extendsCrypto } from "@sirherobrine23/extends";
+import { Github } from "@sirherobrine23/http";
+import { Collection, Db, MongoClient } from "mongodb";
 import crypto from "node:crypto";
-import stream from "node:stream";
+import oldFs, { createReadStream } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { finished } from "node:stream/promises";
+import openpgp from "openpgp";
 import yaml from "yaml";
 
-export type repositorySource = {
+export type repositorySouce = {
   /**
    * Dist component
    * @default main
@@ -23,17 +25,15 @@ export type repositorySource = {
   enableUpload?: boolean;
 } & ({
   type: "http",
+  url: string | URL,
   enableUpload?: false;
-  url: string,
-  auth?: {
-    header?: {[key: string]: string},
-    query?: {[key: string]: string}
-  }
-}|{
+  header?: { [key: string]: string },
+  query?: { [key: string]: string }
+} | {
   type: "mirror",
   enableUpload?: false;
   config: apt.sourceList;
-}|{
+} | {
   type: "github",
   /**
    * Repository owner
@@ -52,11 +52,11 @@ export type repositorySource = {
 } & ({
   subType: "release",
   tag?: string[],
-}|{
+} | {
   subType: "branch",
   enableUpload?: false;
-  branch: string,
-})|{
+  branch: string[],
+}) | {
   type: "googleDriver",
 
   /**
@@ -74,11 +74,14 @@ export type repositorySource = {
    */
   clientToken: googleDriver.googleCredential,
 
+  /** Folder id to add files upload */
+  uploadFolderID?: string;
+
   /**
    * Files or Folders ID's
    */
   gIDs?: string[],
-}|{
+} | {
   type: "oracleBucket",
 
   /**
@@ -86,543 +89,310 @@ export type repositorySource = {
    */
   authConfig: oracleBucket.oracleOptions,
 
+  /** Folder to upload files if enabled */
+  uploadFolderPath?: string;
+
   /**
    * Files or Folders path
    */
   path?: string[],
-}|{
+} | {
   type: "docker",
   auth?: dockerRegistry.userAuth,
   image: string,
   tags?: string[]
 });
 
-export interface repositorySources {
+export type SourceJson = {
   Description?: string;
   Codename?: string;
   Suite?: string;
   Origin?: string;
   Label?: string;
-  sources: {
-    [key: string]: repositorySource;
-  };
-}
-
-export class Repository extends Map<string, repositorySource> {
-  #Description?: string;
-  setDescription(value: string) {this.#Description = value; return this;}
-  getDescription() {return this.#Description}
-
-  #Codename?: string;
-  setCodename(value: string) {this.#Codename = value; return this;}
-  getCodename() {return this.#Codename}
-
-  #Suite?: string;
-  setSuite(value: string) {this.#Suite = value; return this;}
-  getSuite() {return this.#Suite}
-
-  #Origin?: string;
-  setOrigin(value: string) {this.#Origin = value; return this;}
-  getOrigin() {return this.#Origin}
-
-  #Label?: string;
-  setLabel(value: string) {this.#Label = value; return this;}
-  getLabel() {return this.#Label}
-
-  constructor(src?: repositorySources) {
+  repositorys?: {
+    [src: string]: repositorySouce
+  }
+};
+export class Source extends Map<string, repositorySouce> {
+  constructor(src: SourceJson = {}) {
     super();
-    if (src) {
-      if (Array.isArray(src["source"])) {
-        console.warn("Migrating old repository to new Version");
-        const aptConfig = src["aptConfig"] || {};
-        this.#Description = aptConfig.Description;
-        this.#Codename = aptConfig.Codename;
-        this.#Origin = aptConfig.Origin;
-        this.#Suite = aptConfig.Suite;
-        this.#Label = aptConfig.Label;
-        const old: any[] = src["source"];
-        old.forEach(repo => {try {repo.type = repo.type.replace(/_([A-Z])/, (_sub, key: string) => key.toUpperCase()) as any; this.set(repo.id, repo as any)} catch {}});
-        return;
-      }
-      this.#Description = src.Description;
-      this.#Codename = src.Codename;
-      this.#Origin = src.Origin;
-      this.#Suite = src.Suite;
-      this.#Label = src.Label;
-      src.sources ||= {};
-      for (const key in src.sources) {
-        try {this.set(key, src.sources[key]);} catch {}
-      }
-    }
+    if (!src) return;
+    const {
+      Codename,
+      Description,
+      Label,
+      Origin,
+      Suite,
+      repositorys = {}
+    } = src;
+
+    this.Description = Description;
+    this.Codename = Codename;
+    this.Suite = Suite;
+    this.Origin = Origin;
+    this.Label = Label;
+    Object.keys(repositorys).forEach(key => this.set(key, repositorys[key]));
+  }
+
+  Description?: string;
+  Codename?: string;
+  Suite?: string;
+  Origin?: string;
+  Label?: string;
+
+  toJSON() {
+    return Array.from(this.keys()).reduce<SourceJson>((acc, key) => {
+      acc.repositorys[key] = this.get(key);
+      return acc;
+    }, {
+      Description: this.Description,
+      Codename: this.Codename,
+      Suite: this.Suite,
+      Label: this.Label,
+      Origin: this.Origin,
+      repositorys: {}
+    });
+  }
+
+  toArray(): (repositorySouce & { id: string })[] {
+    return Array.from(this.keys()).map(id => ({ id, ...(this.get(id)) }));
   }
 
   /**
-   * Add new repository source
+   * Add new source origin to Repository and check if valid config, else throw Error.
    *
-   * @param key - Repository ID
-   * @param repo - Source config
-   * @returns
+   * @param srcID - optional ID to source
+   * @param value - Repository source to Repository
    */
-  set(key: string, repo: repositorySource) {
-    if (this.has(key)) throw new Error("ID are exists");
-    if (repo["id"]) delete repo["id"];
-    if (repo.type === "http") {
-      if (!repo.url) throw new Error("Required URL to add this source");
-      else {
-        if (!(Object.keys(repo.auth?.header||{}).length) && repo.auth?.header) delete repo.auth.header;
-        if (!(Object.keys(repo.auth?.query||{}).length) && repo.auth?.query) delete repo.auth.query;
-      }
-      if (!(Object.keys(repo.auth||{}).length) && repo.auth) delete repo.auth;
-      repo.enableUpload = false;
-    } else if (repo.type === "mirror") {
-      if (!repo.config) throw new Error("Require Mirror sources");
-      else if (!((repo.config = repo.config.filter(at => at.type === "packages" && at.distname?.trim?.() && at.src?.trim?.())).length)) throw new Error("To mirror the repository you only need a source");
-      repo.enableUpload = false;
-    } else if (repo.type === "github") {
-      if (!(repo.owner && repo.repository)) throw new Error("github Sources require owner and repository");
-      if (!repo.token) delete repo.token;
-      if (repo.subType === "release") {
-        if (!(repo.tag?.length)) delete repo.tag;
-      } else if (repo.subType === "branch") {
-        if (!(repo.branch)) delete repo.branch;
-        repo.enableUpload = false;
-      } else throw new Error("invalid github source");
-    } else if (repo.type === "googleDriver") {
-      if (!(repo.clientId && repo.clientSecret && (typeof repo.clientToken?.access_token === "string" && repo.clientToken.access_token.trim().length > 0))) throw new Error("Invalid settings to Google oAuth");
-      if (!(repo.gIDs?.length)) delete repo.gIDs;
-    } else if (repo.type === "oracleBucket") {
-      if (!repo.authConfig) throw new Error("Required auth config to Oracle bucket");
-      if (repo.authConfig.auth) {
-        if (Array.isArray(repo.authConfig.auth)) {
-          if (!(repo.authConfig.auth.length)) throw new Error("Require auth to Oracle Cloud");
-          const backup = repo.authConfig.auth.slice(0, 2);
+  set(srcID: string | undefined, value: repositorySouce) {
+    if (!value) throw new Error("Require value");
+    else if (!(typeof value === "object" && !Array.isArray(value))) throw new Error("Require Object");
+    else if (typeof value === "string" && this.has(srcID)) throw new Error("Source ID are add");
+    value.componentName ||= "main";
+    value.enableUpload ??= false;
+    srcID ||= value.type + "_" + ([crypto.randomBytes(6).toString("hex"), crypto.randomBytes(crypto.randomInt(4, 16)).toString("hex"), crypto.randomUUID()]).join("-");
+
+    if (value.type === "http") {
+      if (!value.url) throw new Error("Require debian package file");
+      else if (!(value.url instanceof URL || typeof value.url === "string" && value.url.startsWith("http"))) throw new Error("Invalid URL");
+      value.enableUpload = false;
+
+      // Test string to is valid URL
+      let protocol: string;
+      if (typeof value.url === "string") protocol = (new URL(value.url)).protocol;
+      else protocol = value.url.protocol;
+      if (!(protocol === "http:" || protocol === "https:")) throw new Error("Invalid URL, require HTTP protocol");
+
+      value.header ||= {};
+      value.query ||= {};
+    } else if (value.type === "github") {
+      if (!(value.owner && value.repository)) throw new Error("Require valid repository and owner");
+      else if (!(typeof value.owner === "string" && value.owner.length > 1)) throw new Error("Require valid owner username");
+      else if (!(typeof value.repository === "string" && value.repository.length > 1)) throw new Error("Require valid repository name");
+      value.token ||= Github.githubToken;
+
+      if (value.subType === "release") {
+        value.tag ||= [];
+      } else if (value.subType === "branch") {
+        value.enableUpload = false;
+        value.branch ||= [];
+        if (!value.branch.length) throw new Error("Require at one Branch");
+      } else throw new Error("Invalid Github subtype");
+    } else if (value.type === "googleDriver") {
+      if (!(value.clientId && value.clientSecret && value.clientToken)) throw new Error("Require Client ID, Secret and Token auth");
+      else if (!(typeof value.clientId === "string" && value.clientId.length > 5)) throw new Error("Require valid clientID");
+      else if (!(typeof value.clientSecret === "string" && value.clientSecret.length > 5)) throw new Error("Require valid clientSecret");
+      else if (!(typeof value.clientToken === "object" && typeof value.clientToken.access_token === "string")) throw new Error("Require valid token");
+      value.gIDs ||= [];
+    } else if (value.type === "oracleBucket") {
+      if (!value.authConfig.region) throw new Error("Require Bucket region");
+      if (value.authConfig.auth) {
+        if (Array.isArray(value.authConfig.auth)) {
+          if (!(value.authConfig.auth.length)) throw new Error("Require auth to Oracle Cloud");
+          const backup = value.authConfig.auth.slice(0, 2);
           if (!(oldFs.existsSync(path.resolve(process.cwd(), backup.at(0))))) throw new Error("Invalid Oracle auth path, Path not exists");
           backup[0] = path.resolve(process.cwd(), backup.at(0));
           if (typeof backup.at(1) === "string") {
             if (!(backup[1] = backup[1].trim())) delete backup[1];
           } else delete backup[1];
-          repo.authConfig.auth = backup.filter(Boolean);
+          value.authConfig.auth = backup.filter(Boolean);
         } else {
-          const { tenancy, user, fingerprint, privateKey, passphase } = repo.authConfig.auth;
+          const { tenancy, user, fingerprint, privateKey, passphase } = value.authConfig.auth;
           if (!(tenancy && user && fingerprint && privateKey)) throw new Error("Invalid auth to Oracle Cloud");
-          if (!passphase) delete repo.authConfig.auth.passphase;
+          if (!passphase) delete value.authConfig.auth.passphase;
         }
       }
-      if (!(repo.path?.length)) delete repo.path;
-    } else if (repo.type === "docker") {
-      if (!repo.image) throw new Error("Require docker image");
-      if (repo.auth) if (!(repo.auth.username && repo.auth.password)) throw new Error("Required valid auth to Docker image");
-      if (!(repo.tags?.length)) delete repo.tags;
+      value.path ||= [];
+    } else if (value.type === "mirror") {
+      value.enableUpload = false;
+      if (!value.config) throw new Error("Require Mirror sources");
+      else if (!((value.config = value.config.filter(at => at.type === "packages" && at.distname?.trim?.() && at.src?.trim?.())).length)) throw new Error("To mirror the repository you only need a source");
+    } else if (value.type === "docker") {
+      if (!value.image) throw new Error("Require docker image");
+      if (value.auth) if (!(value.auth.username && value.auth.password)) throw new Error("Required valid auth to Docker image");
+      value.tags ||= [];
     } else throw new Error("Invalid source type");
-    repo.componentName ||= "main";
-    repo.enableUpload ??= false;
-    super.set(key, repo);
+    super.set(srcID, value);
     return this;
   }
 
-  /**
-   * Get repository source
-   *
-   * @param repoID - Repository ID
-   * @returns repository source
-   */
-  get(repoID: string) {
-    if (!(this.has(repoID))) throw new Error("Repository not exists");
-    return super.get(repoID);
-  }
+  async uploadFile(srcID: string, filePath: string) {
+    if (!(this.has(srcID))) throw new Error("ID not exists");
+    const info = this.get(srcID);
+    if (!(info.enableUpload)) throw new Error("Cannot upload package");
+    const { controlFile } = await dpkg.parsePackage(createReadStream(filePath));
+    const debInfo = await extendsCrypto.createHashAsync(createReadStream(filePath)), fileName = `${controlFile.Package}_${controlFile.Architecture}_${controlFile.Version}.deb`;
 
-  /** Get all repository sources with repository ID */
-  getAllRepositorys(): ({repositoryID: string} & repositorySource)[] {
-    return Array.from(this.keys()).map(key => ({repositoryID: key, ...(this.get(key))}));
-  }
+    if (info.type === "github") await finished(createReadStream(filePath).pipe((await (await Github.repositoryManeger(info.owner, info.repository, { token: info.token })).release.manegerRelease(controlFile.Version)).uploadAsset(fileName, debInfo.byteLength)), { error: true });
+    else if (info.type === "oracleBucket") await finished(createReadStream(filePath).pipe((await oracleBucket.oracleBucket(info.authConfig)).uploadFile(path.posix.join(info.uploadFolderPath || "/", fileName))));
+    else if (info.type === "googleDriver") {
+      const gdrive = await googleDriver.GoogleDriver({oauth: await googleDriver.createAuth({ clientID: info.clientId, clientSecret: info.clientSecret, token: info.clientToken, authUrlCallback: () => { throw new Error("Auth disabled"); }, tokenCallback: () => { }, redirectURL: null })});
+      await finished(gdrive.uploadFile(fileName, info.uploadFolderID));
+    } else if (info.type === "docker") {
+      const oci = new dockerRegistry.v2(info.image, info.auth);
+      const img = await oci.createImage(dockerRegistry.debianArchToDockerPlatform(controlFile.Architecture));
+      await finished(createReadStream(filePath).pipe(img.createBlob("gzip").addEntry({ name: fileName, size: debInfo.byteLength })));
+      info.tags.push((await img.finalize()).digest);
+      super.set(srcID, info);
+    } else throw new Error("Not implemented upload");
 
-  /**
-   * Upload debian file to repository source if avaible
-   *
-   * @param repositoryID - Repository ID
-   * @returns
-   */
-  async uploadFile(repositoryID: string) {
-    const repo = this.get(repositoryID);
-    if (!repo.enableUpload) throw new Error("Repository not allow or not support to upload files!");
-    if (repo.type === "github") {
-      if (!repo.token) throw new Error("Cannot create upload file to Github Release, required Token to upload files!");
-      const { owner, repository, token } = repo;
-      const gh = await Github.repositoryManeger(owner, repository, {token});
-      return {
-        async githubUpload(filename: string, fileSize: number, tagName?: string): Promise<stream.Writable> {
-          if (!tagName) tagName = (await gh.release.getRelease("__latest__").catch(async () => (await gh.release.getRelease()).at(0)))?.tag_name||"v1";
-          return (await gh.release.manegerRelease(tagName)).uploadAsset(filename, fileSize);
-        }
-      };
-    } else if (repo.type === "googleDriver") {
-      const { clientId: clientID, clientSecret, clientToken } = repo;
-      const gdrive = await googleDriver.GoogleDriver({
-        authConfig: {
-          clientID,
-          clientSecret,
-          token: clientToken,
-          redirectURL: "http://localhost",
-          authUrlCallback(){throw new Error("Set up fist")},
-          tokenCallback() {},
-        }
-      });
-      return {
-        gdriveUpload: async (filename: string, folderId?: string) => gdrive.uploadFile(filename, folderId),
-      };
-    } else if (repo.type === "oracleBucket") {
-      const oci = await oracleBucket.oracleBucket(repo.authConfig);
-      return {ociUpload: oci.uploadFile};
-    } else if (repo.type === "docker") {
-      return {
-        dockerUpload: async (platform: dockerRegistry.dockerPlatform) => {
-          const dockerRepo = new dockerRegistry.v2(repo.image, repo.auth);
-          const img = await dockerRepo.createImage(platform);
-          const blob = img.createBlob("gzip");
-          return {
-            ...blob,
-            annotations: img.annotations,
-            async finalize(tagName?: string) {
-              await blob.finalize();
-              const dockerRepo = await img.finalize(tagName);
-              repo.tags ||= [];
-              repo.tags.push(dockerRepo.digest);
-              return dockerRepo;
-            }
-          };
-        },
-        dockerUploadV2() {
-          return new dockerRegistry.v2(repo.image, repo.auth);
-        }
-      };
-    }
-
-    throw new Error("Not implemented");
-  }
-
-  toJSON(): repositorySources {
-    return {
-      Description: this.#Description,
-      Codename: this.#Codename,
-      Origin: this.#Origin,
-      Label: this.#Label,
-      sources: Array.from(this.keys()).reduce<{[key: string]: repositorySource}>((acc, key) => {acc[key] = this.get(key); return acc;}, {}),
-    };
+    return { controlFile, debInfo };
   }
 }
 
-interface serverConfig {
-  portListen: number;
-  clusterForks: number;
-  dataStorage?: string;
-  release?: {
-    gzip?: boolean;
-    xz?: boolean;
-  };
-  database?: {
-    url: string;
-    databaseName?: string;
-  };
-  gpgSign?: {
+export type ConfigJSON = {
+  mongoURL?: string;
+  gpg?: {
     gpgPassphrase?: string;
-    privateKey: {
-      keyContent: string;
-      filePath?: string;
-    };
-    publicKey: {
-      keyContent: string;
-      filePath?: string;
-    };
+    privateKey: string;
+    publicKey: string;
+  };
+  repositorys: { [repoName: string]: SourceJson };
+};
+
+export async function generateGPG({ passphrase, email, name }: { passphrase?: string, email?: string, name?: string } = {}) {
+  const { privateKey, publicKey } = await openpgp.generateKey({
+    rsaBits: 4094,
+    type: "rsa",
+    format: "armored",
+    passphrase,
+    userIDs: [
+      {
+        comment: "Generated in Apt-Stream",
+        email, name
+      }
+    ]
+  });
+
+  return {
+    privateKey,
+    publicKey,
+    passphrase
   };
 }
 
-export interface configJSON extends serverConfig {
-  repository: {[repoName: string]: repositorySources};
+export class Config extends Map<string, Source> {
+  /** Mongo Server URL to connect */
+  public mongoConnection: URL = new URL("mongodb://127.0.0.1/aptStream");
+  public tmpFolder = tmpdir();
+
+  public gpgPassphrase?: string;
+  public privateGPG?: string;
+  public publicGPG?: string;
+
+  constructor(src?: ConfigJSON | string) {
+    super();
+    if (!src) return;
+
+    if (typeof src === "string") {
+      const srcc: string = src;
+      try {
+        src = yaml.parse(srcc);
+      } catch {
+        src = JSON.parse(srcc);
+      }
+    }
+
+    const {
+      mongoURL,
+      gpg,
+      repositorys = {},
+    } = src as ConfigJSON;
+    if (mongoURL) this.mongoConnection = new URL(mongoURL);
+    if (gpg) {
+      this.gpgPassphrase = gpg.gpgPassphrase;
+      this.privateGPG = gpg.privateKey;
+      this.publicGPG = gpg.publicKey;
+    }
+    Object.keys(repositorys).forEach(key => this.set(key, new Source(repositorys[key])));
+  }
+
+  /**
+   * Get YAML config to easy edit
+   * @returns - yaml Config
+   */
+  toString() { return yaml.stringify(this.toJSON()); }
+
+  toJSON() {
+    return Object.keys(this.keys()).reduce<ConfigJSON>((acc, key) => {
+      acc.repositorys[key] = this.get(key).toJSON();
+      return acc;
+    }, {
+      mongoURL: this.mongoConnection.toString(),
+      ...(!(this.privateGPG && this.publicGPG) ? {} : {
+        gpg: {
+          gpgPassphrase: this.gpgPassphrase,
+          privateKey: this.privateGPG,
+          publicKey: this.publicGPG,
+        }
+      }),
+      repositorys: {},
+    });
+  }
+
+  async getPulicKey(fileType: "dearmor" | "armor" = "armor") {
+    // same to gpg --dearmor
+    if (fileType === "dearmor") return Buffer.from((await openpgp.unarmor(this.publicGPG)).data as any);
+    return (await openpgp.readKey({ armoredKey: this.publicGPG })).armor();
+  }
 }
 
-export class aptStreamConfig {
-  #internalServerConfig: serverConfig = { portListen: 0, clusterForks: 0 };
-  #internalRepository: {[repositoryName: string]: Repository} = {};
-  toJSON(): configJSON {
-    const config: configJSON = Object(this.#internalServerConfig);
-    if (config.dataStorage) config.dataStorage = path.relative(process.cwd(), config.dataStorage);
-    config.repository = {};
-    Object.keys(this.#internalRepository).forEach(repoName => config.repository[repoName] = this.#internalRepository[repoName].toJSON());
-    return config;
+type packageCollection = {
+  repositorys: {repository: string, origim: string}[];
+  restoreFile: any;
+  control: dpkg.debianControl;
+};
+
+export type uploadInfo = {
+  ID: string;
+  token: string;
+  validAt: number;
+  filePath: string;
+  repository: string;
+  destID: string;
+};
+
+export class Connection {
+  constructor(public repoConfig: Config, public client: MongoClient) {
+    this.database = client.db(repoConfig.mongoConnection.pathname.slice(1) || "aptStream");
+    this.packageCollection = this.database.collection<packageCollection>("packages");
+    this.uploadCollection = this.database.collection<uploadInfo>("uploads");
   }
 
-  toString(encode?: BufferEncoding, type?: "json"|"yaml") {
-    encode ||= "utf8";
-    type ||= "json";
-    return ((["hex", "base64", "base64url"]).includes(encode) ? (encode+":") : "")+(Buffer.from((type === "yaml" ? yaml : JSON).stringify(this.toJSON(), null, (["hex", "base64", "base64url"]).includes(encode) ? undefined : 2), "utf8").toString(encode || "utf8"));
-  }
+  public database: Db;
+  public packageCollection: Collection<packageCollection>;
+  public uploadCollection: Collection<uploadInfo>;
 
-  #configPath?: string;
-  async saveConfig(configPath?: string, type?: "json"|"yaml") {
-    if (!(configPath||this.#configPath)) throw new Error("Current config only memory");
-    if (this.#configPath) type ||= path.extname(this.#configPath) === ".json" ? "json" : "yaml";
-    else if (configPath) type ||= path.extname(configPath) === ".json" ? "json" : "yaml";
-    await fs.writeFile((configPath||this.#configPath), this.toString("utf8", type));
-  }
-
-  constructor(config?: string|configJSON|aptStreamConfig) {
-    if (config) {
-      let nodeConfig: configJSON;
-      if (config instanceof aptStreamConfig) {
-        this.#configPath = config.#configPath;
-        config = config.toJSON();
-      }
-      if (typeof config === "string") {
-        let indexofEncoding: number;
-        if (config.startsWith("env:")) config = process.env[config.slice(4)];
-        if (path.isAbsolute(path.resolve(process.cwd(), config))) {
-          if (oldFs.existsSync(path.resolve(process.cwd(), config))) config = oldFs.readFileSync((this.#configPath = path.resolve(process.cwd(), config)), "utf8")
-          else {
-            this.#configPath = path.resolve(process.cwd(), config);
-            config = undefined;
-          }
-        } else if ((["hex:", "base64:", "base64url:"]).find(rel => config.toString().startsWith(rel))) config = Buffer.from(config.slice(indexofEncoding+1).trim(), config.slice(0, indexofEncoding) as BufferEncoding).toString("utf8");
-        else config = undefined;
-        if (!!config) {
-          try {
-            nodeConfig = JSON.parse(config as string);
-          } catch {
-            try {
-              nodeConfig = yaml.parse(config as string);
-            } catch {
-              throw new Error("Invalid config, not is YAML or JSON");
-            }
-          }
-        }
-      } else if (typeof config === "object") nodeConfig = config;
-
-      // Add sources
-      nodeConfig ||= {clusterForks: 0, portListen: 0, repository: {}};
-      nodeConfig.repository ||= {};
-      Object.keys(nodeConfig.repository).forEach(keyName => this.#internalRepository[keyName] = new Repository(nodeConfig.repository[keyName]));
-
-      // Add server config
-      delete nodeConfig.repository;
-      this.#internalServerConfig = {clusterForks: Number(nodeConfig.clusterForks || 0), portListen: Number(nodeConfig.portListen || 0)};
-      if (nodeConfig.dataStorage) this.#internalServerConfig.dataStorage = path.resolve(process.cwd(), nodeConfig.dataStorage);
-      this.#internalServerConfig.release = {};
-      this.#internalServerConfig.release.gzip = !!(nodeConfig.release?.gzip ?? true);
-      this.#internalServerConfig.release.xz = !!(nodeConfig.release?.xz ?? true);
-      if (nodeConfig.database?.url) this.#internalServerConfig.database = {
-        url: nodeConfig.database.url,
-        databaseName: nodeConfig.database.databaseName || "aptStream"
-      };
-      if (nodeConfig.gpgSign?.privateKey && nodeConfig.gpgSign?.publicKey) {
-        const { gpgPassphrase, privateKey, publicKey } = nodeConfig.gpgSign;
-        if (privateKey.filePath && publicKey.filePath) {
-          privateKey.keyContent = oldFs.readFileSync(privateKey.filePath, "utf8");
-          publicKey.keyContent = oldFs.readFileSync(publicKey.filePath, "utf8");
-        }
-        this.#internalServerConfig.gpgSign = {
-          gpgPassphrase: String(gpgPassphrase||""),
-          privateKey: {
-            keyContent: privateKey.keyContent,
-            filePath: privateKey.filePath
-          },
-          publicKey: {
-            keyContent: publicKey.keyContent,
-            filePath: publicKey.filePath
-          }
-        };
-      }
-      if (!this.#internalServerConfig.gpgSign?.gpgPassphrase && typeof this.#internalServerConfig.gpgSign?.gpgPassphrase === "string") delete this.#internalServerConfig.gpgSign.gpgPassphrase;
-    }
-  }
-
-  setCompressRelease(target: keyof configJSON["release"], value: boolean) {
-    this.#internalServerConfig.release[target] = !!value;
-    return this;
-  }
-
-  getCompressRelease(target: keyof configJSON["release"]) {
-    return !!(this.#internalServerConfig.release?.[target]);
-  }
-
-  databaseAvaible() {return !!this.#internalServerConfig.database;}
-  getDatabase() {
-    if (!this.databaseAvaible()) throw new Error("No Database set up");
-    return this.#internalServerConfig.database;
-  }
-
-  setDatabse(url: string, databaseName?: string) {
-    this.#internalServerConfig.database = {
-      url,
-      databaseName
+  public getConnections() {
+    const connection = this.client["topology"];
+    return {
+      current: Number(connection.client.s.activeSessions?.size),
+      max: Number(connection.s.options.maxConnecting),
     };
-    return this;
   }
+}
 
-  getClusterForks() {return Number(this.#internalServerConfig.clusterForks || 0);}
-  setClusterForks(value: number) {
-    if (value > 0 && value < 256) this.#internalServerConfig.clusterForks = value;
-    else this.#internalServerConfig.clusterForks = 0;
-    return this;
-  }
-
-  setDataStorage(folderPath: string) {
-    if (path.isAbsolute(folderPath)) this.#internalServerConfig.dataStorage = folderPath; else throw new Error("Require absolute path");
-    return this;
-  }
-  async getDataStorage() {
-    if (!this.#internalServerConfig.dataStorage) return undefined;
-    if (!(await extendsFS.exists(this.#internalServerConfig.dataStorage))) await fs.mkdir(this.#internalServerConfig.dataStorage, {recursive: true});
-    return this.#internalServerConfig.dataStorage;
-  }
-
-  getPortListen() {return Number(this.#internalServerConfig.portListen || 0);}
-  setPortListen(port: number) {
-    if (port >= 0 && port <= ((2**16) - 1)) this.#internalServerConfig.portListen = port;
-    else throw new Error(`Invalid port range (0 - ${(2**16) - 1})`);
-    return this;
-  }
-
-  setPGPKey(gpgSign: configJSON["gpgSign"]) {
-    const { gpgPassphrase, privateKey, publicKey } = gpgSign;
-    if (privateKey.filePath && publicKey.filePath) {
-      privateKey.keyContent = oldFs.readFileSync(privateKey.filePath, "utf8");
-      publicKey.keyContent = oldFs.readFileSync(publicKey.filePath, "utf8");
-    }
-    this.#internalServerConfig.gpgSign = {
-      gpgPassphrase: String(gpgPassphrase||""),
-      privateKey: {
-        keyContent: privateKey.keyContent,
-        filePath: privateKey.filePath
-      },
-      publicKey: {
-        keyContent: publicKey.keyContent,
-        filePath: publicKey.filePath
-      }
-    };
-
-    return this;
-  }
-
-  /**
-   * Generate Private and Public PGP/GPG Keys to signing repository (InRelease and Release.gpg)
-   *
-   * @param options - Gpg Options
-   * @returns
-   */
-  async generateGpgKeys(options?: {passphrase?: string, email?: string, name?: string}) {
-    const { passphrase, email, name } = options || {};
-    const { privateKey, publicKey } = await openpgp.generateKey({
-      rsaBits: 4094,
-      type: "rsa",
-      format: "armored",
-      passphrase,
-      userIDs: [
-        {
-          comment: "Generated in Apt-Stream",
-          email, name
-        }
-      ]
-    });
-    this.#internalServerConfig.gpgSign = {
-      gpgPassphrase: passphrase,
-      privateKey: {keyContent: privateKey},
-      publicKey: {keyContent: publicKey}
-    };
-    if (this.#internalServerConfig.dataStorage) {
-      this.#internalServerConfig.gpgSign.privateKey.filePath = path.join(this.#internalServerConfig.dataStorage, "privateKey.gpg");
-      this.#internalServerConfig.gpgSign.publicKey.filePath = path.join(this.#internalServerConfig.dataStorage, "publicKey.gpg");
-      await fs.writeFile(this.#internalServerConfig.gpgSign.privateKey.filePath, this.#internalServerConfig.gpgSign.privateKey.keyContent);
-      await fs.writeFile(this.#internalServerConfig.gpgSign.publicKey.filePath, this.#internalServerConfig.gpgSign.publicKey.keyContent);
-    }
-
-    return this.#internalServerConfig.gpgSign;
-  }
-
-  getPGPKey() {
-    if (!this.#internalServerConfig.gpgSign) throw new Error("PGP/GPG Key not set");
-    return this.#internalServerConfig.gpgSign;
-  }
-
-  async getPublicKey(type: "dearmor"|"armor"): Promise<string|Buffer> {
-    const { publicKey } = this.getPGPKey();
-    // same to gpg --dearmor
-    if (type === "dearmor") return Buffer.from((await openpgp.unarmor(publicKey.keyContent)).data as any);
-    return (await openpgp.readKey({ armoredKey: publicKey.keyContent })).armor();
-  }
-
-  /**
-   * Create new source to repository.
-   *
-   * @param repositoryName - Repository name
-   * @returns Repository class
-   */
-  createRepository(repositoryName: string) {
-    if (this.#internalRepository[repositoryName]) throw new Error("Repository name are exists");
-    this.#internalRepository[repositoryName] = new Repository();
-    this.#internalRepository[repositoryName].setCodename(repositoryName).setOrigin(repositoryName);
-    return this.#internalRepository[repositoryName];
-  }
-
-  /**
-   *
-   * @param repositoryName - Repository name, if not exists create this.
-   * @param pkgSource - Packages source
-   * @returns
-   */
-  addToRepository(repositoryName: string, pkgSource: repositorySource) {
-    this.#internalRepository[repositoryName] ||= new Repository();
-    this.#internalRepository[repositoryName].set(this.createRepositoryID(), pkgSource);
-    return this;
-  }
-
-  createRepositoryID() {
-    let repoID: string;
-    while (!repoID) {
-      repoID = ("aptS__")+(crypto.randomBytes(16).toString("hex"));
-      if (this.getRepositorys().find(key => key.repositoryManeger.has(repoID))) repoID = undefined;
-    }
-    return repoID;
-  }
-
-  hasSource(repositoryName: string) {
-    return !!(this.#internalRepository[repositoryName]);
-  }
-
-  /**
-   * Get repository source
-   * @param repositoryName - Repository name or Codename
-   * @returns
-   */
-  getRepository(repositoryName: string) {
-    if (repositoryName.startsWith("aptS__")) {
-      const bc = repositoryName;
-      repositoryName = undefined;
-      for (const repo of Object.keys(this.#internalRepository)) if (this.#internalRepository[repo].has(bc)) {repositoryName = repo; break;}
-    } else if (!this.#internalRepository[repositoryName]) {
-      const bc = repositoryName;
-      repositoryName = undefined;
-      for (const repo of Object.keys(this.#internalRepository)) if (this.#internalRepository[repo].getCodename() === bc) {repositoryName = repo; break;}
-    }
-    if (!repositoryName) throw new Error("Repository not exists");
-    return this.#internalRepository[repositoryName];
-  }
-
-  /**
-   * Delete repository
-   *
-   * @param repositoryName - Repository name or Codename
-   * @returns return a boolean to indicate delete status
-   */
-  deleteRepository(repositoryName: string) {
-    if (!this.#internalRepository[repositoryName]) {
-      const bc = repositoryName;
-      repositoryName = undefined;
-      for (const repo of Object.keys(this.#internalRepository)) if (this.#internalRepository[repo].getCodename() === bc) {repositoryName = repo; break;}
-      if (!repositoryName) throw new Error("Repository not exists");
-    }
-    return delete this.#internalRepository[repositoryName];
-  }
-
-  getRepositorys() {
-    return Object.keys(this.#internalRepository).map(repositoryName => ({repositoryName, repositoryManeger: this.#internalRepository[repositoryName]}));
-  }
+export async function Connect(repoConfig: Config) {
+  const client = await (new MongoClient(repoConfig.mongoConnection.toString())).connect();
+  return new Connection(repoConfig, client);
 }
