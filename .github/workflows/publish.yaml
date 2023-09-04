@@ -15,7 +15,7 @@ jobs:
     env:
       PACKAGE_VERSION: ${{ github.ref }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       name: Code checkout
       with:
         persist-credentials: true
