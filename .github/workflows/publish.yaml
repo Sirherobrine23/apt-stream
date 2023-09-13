@@ -24,7 +24,7 @@ jobs:
         submodules: true
 
     - name: Setup QEMU to Docker
-      uses: docker/setup-qemu-action@v2
+      uses: docker/setup-qemu-action@v3
 
     - name: Setup Buildx
       uses: docker/setup-buildx-action@v2
