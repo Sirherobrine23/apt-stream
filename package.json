@@ -62,7 +62,7 @@
     "express-rate-limit": "^6.7.0",
     "inquirer": "^9.2.1",
     "inquirer-file-tree-selection-prompt": "^2.0.5",
-    "mongodb": "^5.4.0",
+    "mongodb": "^6.1.0",
     "openpgp": "^5.8.0",
     "yaml": "^2.2.2",
     "yargs": "^17.7.2"
