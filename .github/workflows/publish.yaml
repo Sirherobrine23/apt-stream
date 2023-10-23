@@ -37,7 +37,7 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
 
     # Install basic tools
-    - uses: actions/setup-node@v3
+    - uses: actions/setup-node@v4
       name: Setup node.js
       with:
         node-version: 18.x
